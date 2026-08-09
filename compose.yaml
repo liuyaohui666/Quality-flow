@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: quality_flow
+      POSTGRES_USER: quality_flow
+      POSTGRES_PASSWORD: quality_flow
+    ports:
+      - "5432:5432"
+    volumes:
+      - quality-flow-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quality_flow -d quality_flow"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - quality-flow-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  quality-flow-postgres:
+  quality-flow-redis:

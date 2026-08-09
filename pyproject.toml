@@ -6,7 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "quality-flow"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["PyYAML>=6.0"]
+dependencies = [
+    "Alembic>=1.13,<2",
+    "psycopg[binary]>=3.2,<4",
+    "PyYAML>=6.0",
+    "SQLAlchemy>=2.0,<3",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
