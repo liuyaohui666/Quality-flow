@@ -1,0 +1,18 @@
+suites:
+  demo-api:
+    runner_type: pytest
+    working_directory: .
+    argv:
+      - python
+      - -m
+      - pytest
+      - tests
+    timeout_seconds: 300
+    allowed_parameters:
+      scenario:
+        - smoke
+        - regression
+    gate_policy:
+      min_pass_rate: 1.0
+      max_failures: 0
+    source_revision: main
