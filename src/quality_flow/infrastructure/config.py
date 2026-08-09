@@ -23,7 +23,15 @@ class Settings:
         if configured_path.is_absolute() or ".." in configured_path.parts:
             raise ValueError("QUALITY_FLOW_SUITES_CONFIG must be a project-relative path")
 
+        resolved_config_path = (resolved_root / configured_path).resolve()
+        try:
+            resolved_config_path.relative_to(resolved_root)
+        except ValueError as error:
+            raise ValueError(
+                "QUALITY_FLOW_SUITES_CONFIG must be project-relative and resolve inside the project root"
+            ) from error
+
         return cls(
             project_root=resolved_root,
-            suites_config_path=(resolved_root / configured_path).resolve(),
+            suites_config_path=resolved_config_path,
         )
