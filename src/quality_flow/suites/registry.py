@@ -73,6 +73,9 @@ class SuiteRegistry:
     def __post_init__(self) -> None:
         object.__setattr__(self, "_suites", MappingProxyType(dict(self._suites)))
 
+    def __len__(self) -> int:
+        return len(self._suites)
+
     @classmethod
     def from_yaml(cls, path: Path, project_root: Path) -> "SuiteRegistry":
         root = project_root.resolve()

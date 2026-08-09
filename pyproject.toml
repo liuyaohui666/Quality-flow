@@ -8,9 +8,18 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "Alembic>=1.13,<2",
+    "fastapi>=0.111,<1",
+    "httpx>=0.27,<1",
+    "pydantic>=2.7,<3",
     "psycopg[binary]>=3.2,<4",
     "PyYAML>=6.0",
     "SQLAlchemy>=2.0,<3",
+    "uvicorn>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
 ]
 
 [tool.pytest.ini_options]
