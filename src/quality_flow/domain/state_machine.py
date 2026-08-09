@@ -35,6 +35,8 @@ Status = TypeVar("Status")
 
 def ensure_run_transition(current: RunStatus, next_status: RunStatus) -> None:
     """Raise when a run is asked to move outside its declared lifecycle."""
+    if type(current) is not RunStatus or type(next_status) is not RunStatus:
+        raise InvalidStateTransition("Run transitions require RunStatus values")
     _ensure_transition(_RUN_TRANSITIONS, current, next_status)
 
 
@@ -42,6 +44,8 @@ def ensure_attempt_transition(
     current: AttemptStatus, next_status: AttemptStatus
 ) -> None:
     """Raise when an attempt is asked to move outside its declared lifecycle."""
+    if type(current) is not AttemptStatus or type(next_status) is not AttemptStatus:
+        raise InvalidStateTransition("Attempt transitions require AttemptStatus values")
     _ensure_transition(_ATTEMPT_TRANSITIONS, current, next_status)
 
 

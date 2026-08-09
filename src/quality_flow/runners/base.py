@@ -18,9 +18,6 @@ class CaseSummary:
 class PerformanceSummary:
     request_count: int
     p95_ms: float
-    failure_ratio: float = 0.0
-    requests_per_second: float = 0.0
-    average_ms: float = 0.0
 
 
 @dataclass(frozen=True)

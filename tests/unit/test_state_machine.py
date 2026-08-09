@@ -47,3 +47,35 @@ def test_running_attempt_can_finish_with_each_terminal_status(
 def test_attempt_cannot_skip_dispatch_to_a_terminal_status() -> None:
     with pytest.raises(InvalidStateTransition):
         ensure_attempt_transition(AttemptStatus.DISPATCHED, AttemptStatus.PASSED)
+
+
+@pytest.mark.parametrize(
+    ("current", "next_status"),
+    [
+        (AttemptStatus.RUNNING, RunStatus.COMPLETED),
+        (RunStatus.RUNNING, AttemptStatus.INFRA_FAILED),
+        ("running", RunStatus.COMPLETED),
+        (RunStatus.RUNNING, "completed"),
+    ],
+)
+def test_run_transition_rejects_other_enum_classes_and_strings(
+    current: object, next_status: object
+) -> None:
+    with pytest.raises(InvalidStateTransition):
+        ensure_run_transition(current, next_status)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("current", "next_status"),
+    [
+        (RunStatus.RUNNING, AttemptStatus.PASSED),
+        (AttemptStatus.RUNNING, RunStatus.INFRA_FAILED),
+        ("running", AttemptStatus.PASSED),
+        (AttemptStatus.RUNNING, "passed"),
+    ],
+)
+def test_attempt_transition_rejects_other_enum_classes_and_strings(
+    current: object, next_status: object
+) -> None:
+    with pytest.raises(InvalidStateTransition):
+        ensure_attempt_transition(current, next_status)  # type: ignore[arg-type]
