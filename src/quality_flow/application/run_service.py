@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from quality_flow.domain.enums import RunStatus
+from quality_flow.domain.enums import RunOutcome, RunStatus
 from quality_flow.suites.registry import SuiteRegistry
 
 
@@ -20,6 +20,8 @@ class NewRun:
     suite_snapshot: dict[str, Any]
     gate_policy_snapshot: dict[str, Any]
     status: RunStatus
+    outcome: RunOutcome
+    version: int
     created_at: datetime
 
 
@@ -60,6 +62,10 @@ class RunUnitOfWork(Protocol):
     def add_outbox_event(self, event: NewOutboxEvent) -> None: ...
 
     def commit(self) -> None: ...
+
+
+class DuplicateIdempotencyKeyError(RuntimeError):
+    """Signal that another transaction won an idempotency-key race."""
 
 
 class RunService:
@@ -107,6 +113,8 @@ class RunService:
                 },
                 gate_policy_snapshot=asdict(suite.gate_policy),
                 status=RunStatus.QUEUED,
+                outcome=RunOutcome.UNKNOWN,
+                version=1,
                 created_at=created_at,
             )
             payload = {"run_id": str(run_id), "suite_id": suite.suite_id}
@@ -130,5 +138,14 @@ class RunService:
                     created_at=created_at,
                 )
             )
-            uow.commit()
+            try:
+                uow.commit()
+            except DuplicateIdempotencyKeyError:
+                existing = uow.runs.get_by_idempotency_key(idempotency_key)
+                if existing is None:
+                    raise RuntimeError(
+                        "Idempotency conflict was reported but the winning Run "
+                        "could not be read"
+                    )
+                return existing
             return run

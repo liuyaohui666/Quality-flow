@@ -16,15 +16,16 @@ depends_on = None
 
 run_status = sa.Enum(
     "queued", "running", "completed", "infra_failed", "timed_out",
-    name="run_status", native_enum=False,
+    name="run_status", native_enum=False, create_constraint=False,
 )
 run_outcome = sa.Enum(
-    "passed", "failed", "infra_failed", "timed_out",
-    name="run_outcome", native_enum=False,
+    "unknown", "passed", "failed",
+    name="run_outcome", native_enum=False, create_constraint=False,
 )
 attempt_status = sa.Enum(
     "dispatched", "running", "passed", "test_failed", "infra_failed",
     "timed_out", "abandoned", name="attempt_status", native_enum=False,
+    create_constraint=False,
 )
 
 
@@ -38,12 +39,21 @@ def upgrade() -> None:
         sa.Column("suite_snapshot", sa.JSON(), nullable=False),
         sa.Column("gate_policy_snapshot", sa.JSON(), nullable=False),
         sa.Column("status", run_status, nullable=False),
-        sa.Column("outcome", run_outcome),
+        sa.Column("outcome", run_outcome, nullable=False, server_default="unknown"),
+        sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True)),
         sa.Column("finished_at", sa.DateTime(timezone=True)),
         sa.UniqueConstraint("idempotency_key", name="uq_runs_idempotency_key"),
+        sa.CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'infra_failed', 'timed_out')",
+            name="ck_runs_status",
+        ),
+        sa.CheckConstraint(
+            "outcome IN ('unknown', 'passed', 'failed')",
+            name="ck_runs_outcome",
+        ),
     )
     op.create_index("ix_runs_created_at", "runs", ["created_at"])
     op.create_index("ix_runs_status_created_at", "runs", ["status", "created_at"])
@@ -55,10 +65,20 @@ def upgrade() -> None:
         sa.Column("attempt_no", sa.Integer(), nullable=False),
         sa.Column("status", attempt_status, nullable=False),
         sa.Column("worker_id", sa.String(255)),
+        sa.Column("lease_token", sa.Uuid()),
+        sa.Column("heartbeat_at", sa.DateTime(timezone=True)),
+        sa.Column("lease_expires_at", sa.DateTime(timezone=True)),
+        sa.Column("exit_code", sa.Integer()),
+        sa.Column("failure_reason", sa.Text()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True)),
         sa.Column("finished_at", sa.DateTime(timezone=True)),
         sa.UniqueConstraint("run_id", "attempt_no", name="uq_run_attempts_run_attempt"),
+        sa.CheckConstraint(
+            "status IN ('dispatched', 'running', 'passed', 'test_failed', "
+            "'infra_failed', 'timed_out', 'abandoned')",
+            name="ck_run_attempts_status",
+        ),
     )
     op.create_index("ix_run_attempts_run_id", "run_attempts", ["run_id"])
     op.create_index("ix_run_attempts_created_at", "run_attempts", ["created_at"])
@@ -110,7 +130,6 @@ def upgrade() -> None:
     op.create_table(
         "gate_evaluations",
         sa.Column("gate_evaluation_id", sa.Uuid(), primary_key=True),
-        sa.Column("run_id", sa.Uuid(), sa.ForeignKey("runs.run_id", ondelete="CASCADE"), nullable=False),
         sa.Column("attempt_id", sa.Uuid(), sa.ForeignKey("run_attempts.attempt_id", ondelete="CASCADE"), nullable=False),
         sa.Column("gate_type", sa.String(64), nullable=False),
         sa.Column("passed", sa.Boolean(), nullable=False),
@@ -118,7 +137,6 @@ def upgrade() -> None:
         sa.Column("details", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
-    op.create_index("ix_gate_evaluations_run_id", "gate_evaluations", ["run_id"])
     op.create_index("ix_gate_evaluations_attempt_id", "gate_evaluations", ["attempt_id"])
     op.create_index("ix_gate_evaluations_created_at", "gate_evaluations", ["created_at"])
 

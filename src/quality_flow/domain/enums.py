@@ -12,10 +12,9 @@ class RunStatus(StrEnum):
 
 
 class RunOutcome(StrEnum):
+    UNKNOWN = "unknown"
     PASSED = "passed"
     FAILED = "failed"
-    INFRA_FAILED = "infra_failed"
-    TIMED_OUT = "timed_out"
 
 
 class AttemptStatus(StrEnum):

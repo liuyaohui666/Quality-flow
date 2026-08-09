@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from typing import TypeVar
 
-from quality_flow.domain.enums import AttemptStatus, RunStatus
+from quality_flow.domain.enums import AttemptStatus, RunOutcome, RunStatus
 
 
 class InvalidStateTransition(ValueError):
@@ -30,6 +30,17 @@ _ATTEMPT_TRANSITIONS: Mapping[AttemptStatus, frozenset[AttemptStatus]] = {
     ),
 }
 
+_TERMINAL_RESULT_MATRIX: Mapping[
+    tuple[AttemptStatus, RunOutcome], RunStatus
+] = {
+    (AttemptStatus.PASSED, RunOutcome.PASSED): RunStatus.COMPLETED,
+    (AttemptStatus.PASSED, RunOutcome.FAILED): RunStatus.COMPLETED,
+    (AttemptStatus.TEST_FAILED, RunOutcome.FAILED): RunStatus.COMPLETED,
+    (AttemptStatus.INFRA_FAILED, RunOutcome.UNKNOWN): RunStatus.INFRA_FAILED,
+    (AttemptStatus.TIMED_OUT, RunOutcome.UNKNOWN): RunStatus.TIMED_OUT,
+    (AttemptStatus.ABANDONED, RunOutcome.UNKNOWN): RunStatus.INFRA_FAILED,
+}
+
 Status = TypeVar("Status")
 
 
@@ -47,6 +58,22 @@ def ensure_attempt_transition(
     if type(current) is not AttemptStatus or type(next_status) is not AttemptStatus:
         raise InvalidStateTransition("Attempt transitions require AttemptStatus values")
     _ensure_transition(_ATTEMPT_TRANSITIONS, current, next_status)
+
+
+def resolve_terminal_run_status(
+    attempt_status: AttemptStatus, outcome: RunOutcome
+) -> RunStatus:
+    """Resolve the Run terminal status for a trusted Attempt/Outcome pair."""
+    if type(attempt_status) is not AttemptStatus or type(outcome) is not RunOutcome:
+        raise InvalidStateTransition(
+            "Terminal results require AttemptStatus and RunOutcome values"
+        )
+    try:
+        return _TERMINAL_RESULT_MATRIX[(attempt_status, outcome)]
+    except KeyError as error:
+        raise InvalidStateTransition(
+            f"Invalid terminal result: {attempt_status} with {outcome}"
+        ) from error
 
 
 def _ensure_transition(

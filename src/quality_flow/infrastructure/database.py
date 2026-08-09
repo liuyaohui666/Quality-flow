@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from quality_flow.application.run_service import NewOutboxEvent, NewRun, NewRunEvent
+from quality_flow.application.run_service import (
+    DuplicateIdempotencyKeyError,
+    NewOutboxEvent,
+    NewRun,
+    NewRunEvent,
+)
 from quality_flow.infrastructure.models import OutboxEvent, Run, RunEvent
 from quality_flow.infrastructure.repositories import RunRepository
 
@@ -47,6 +53,8 @@ class SqlAlchemyUnitOfWork:
                 suite_snapshot=run.suite_snapshot,
                 gate_policy_snapshot=run.gate_policy_snapshot,
                 status=run.status,
+                outcome=run.outcome,
+                version=run.version,
                 created_at=run.created_at,
                 updated_at=run.created_at,
             )
@@ -76,7 +84,16 @@ class SqlAlchemyUnitOfWork:
         )
 
     def commit(self) -> None:
-        self.session.commit()
+        try:
+            self.session.commit()
+        except IntegrityError as error:
+            self.session.rollback()
+            diagnostic = getattr(getattr(error, "orig", None), "diag", None)
+            if getattr(diagnostic, "constraint_name", None) == (
+                "uq_runs_idempotency_key"
+            ):
+                raise DuplicateIdempotencyKeyError from error
+            raise
 
     def rollback(self) -> None:
         self.session.rollback()

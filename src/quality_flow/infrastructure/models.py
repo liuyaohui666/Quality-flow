@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     Float,
@@ -33,6 +34,7 @@ def enum_column(enum_type: type, name: str) -> Enum:
         enum_type,
         name=name,
         native_enum=False,
+        create_constraint=False,
         values_callable=lambda values: [value.value for value in values],
         validate_strings=True,
     )
@@ -46,6 +48,15 @@ class Run(Base):
     __tablename__ = "runs"
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_runs_idempotency_key"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'infra_failed', "
+            "'timed_out')",
+            name="ck_runs_status",
+        ),
+        CheckConstraint(
+            "outcome IN ('unknown', 'passed', 'failed')",
+            name="ck_runs_outcome",
+        ),
         Index("ix_runs_status_created_at", "status", "created_at"),
     )
 
@@ -58,8 +69,14 @@ class Run(Base):
     status: Mapped[RunStatus] = mapped_column(
         enum_column(RunStatus, "run_status"), nullable=False, default=RunStatus.QUEUED
     )
-    outcome: Mapped[RunOutcome | None] = mapped_column(
-        enum_column(RunOutcome, "run_outcome"), nullable=True
+    outcome: Mapped[RunOutcome] = mapped_column(
+        enum_column(RunOutcome, "run_outcome"),
+        nullable=False,
+        default=RunOutcome.UNKNOWN,
+        server_default=RunOutcome.UNKNOWN.value,
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, index=True
@@ -77,11 +94,18 @@ class Run(Base):
         back_populates="run", cascade="all, delete-orphan"
     )
 
+    __mapper_args__ = {"version_id_col": version}
+
 
 class RunAttempt(Base):
     __tablename__ = "run_attempts"
     __table_args__ = (
         UniqueConstraint("run_id", "attempt_no", name="uq_run_attempts_run_attempt"),
+        CheckConstraint(
+            "status IN ('dispatched', 'running', 'passed', 'test_failed', "
+            "'infra_failed', 'timed_out', 'abandoned')",
+            name="ck_run_attempts_status",
+        ),
         Index("ix_run_attempts_status_created_at", "status", "created_at"),
     )
 
@@ -94,6 +118,11 @@ class RunAttempt(Base):
         enum_column(AttemptStatus, "attempt_status"), nullable=False
     )
     worker_id: Mapped[str | None] = mapped_column(String(255))
+    lease_token: Mapped[UUID | None] = mapped_column()
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exit_code: Mapped[int | None] = mapped_column(Integer)
+    failure_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, index=True
     )
@@ -164,9 +193,6 @@ class GateEvaluation(Base):
     __tablename__ = "gate_evaluations"
 
     gate_evaluation_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    run_id: Mapped[UUID] = mapped_column(
-        ForeignKey("runs.run_id", ondelete="CASCADE"), nullable=False, index=True
-    )
     attempt_id: Mapped[UUID] = mapped_column(
         ForeignKey("run_attempts.attempt_id", ondelete="CASCADE"), nullable=False, index=True
     )
