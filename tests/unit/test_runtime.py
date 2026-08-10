@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from threading import Event
 
 from quality_flow import runtime
@@ -23,6 +24,7 @@ def test_poll_loop_runs_actions_until_stop_is_requested() -> None:
 def test_poll_loop_logs_failure_and_keeps_authoritative_polling_state(caplog) -> None:
     stop = Event()
     attempts = 0
+    heartbeats: list[str] = []
 
     def action() -> int:
         nonlocal attempts
@@ -32,9 +34,15 @@ def test_poll_loop_logs_failure_and_keeps_authoritative_polling_state(caplog) ->
         stop.set()
         return 1
 
-    runtime.poll_until_stopped(action, stop=stop, interval_seconds=0.01)
+    runtime.poll_until_stopped(
+        action,
+        stop=stop,
+        interval_seconds=0.01,
+        on_success=lambda: heartbeats.append("healthy"),
+    )
 
     assert attempts == 2
+    assert heartbeats == ["healthy"]
     assert "poll failed" in caplog.text
 
 
@@ -46,3 +54,14 @@ def test_main_dispatches_only_known_long_running_roles(monkeypatch) -> None:
     assert runtime.main(["dispatcher"]) == 0
     assert runtime.main(["reconciler"]) == 0
     assert calls == ["dispatcher", "reconciler"]
+
+
+def test_touch_heartbeat_creates_only_the_requested_service_file(
+    tmp_path: Path,
+) -> None:
+    heartbeat = tmp_path / "health" / "dispatcher"
+
+    runtime.touch_heartbeat(heartbeat)
+
+    assert heartbeat.is_file()
+    assert list(heartbeat.parent.iterdir()) == [heartbeat]

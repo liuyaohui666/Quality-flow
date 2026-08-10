@@ -99,6 +99,22 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -m
+        - scripts.healthcheck
+        - dispatcher
+        - /runtime/health/dispatcher
+        - --max-age
+        - "10"
+        - --timeout
+        - "2"
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
     stop_grace_period: 10s
 
   worker:
@@ -123,6 +139,19 @@ services:
         condition: service_completed_successfully
       demo-target:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -m
+        - scripts.healthcheck
+        - worker
+        - --timeout
+        - "2"
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
     stop_grace_period: 15s
 
   reconciler:
@@ -133,6 +162,20 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -m
+        - scripts.healthcheck
+        - heartbeat
+        - /runtime/health/reconciler
+        - --max-age
+        - "10"
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
     stop_grace_period: 10s
 
   demo-target:

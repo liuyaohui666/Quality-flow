@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import yaml
 
@@ -103,3 +104,91 @@ def test_image_is_python_312_non_root_and_build_context_excludes_host_state() ->
     assert 'pip install --no-cache-dir ".[dev]"' in dockerfile
     for pattern in (".git", ".venv", "__pycache__", ".env", "reports", "runtime"):
         assert pattern in ignored
+
+
+def test_dockerfile_copies_only_the_runtime_source_allowlist() -> None:
+    dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert re.search(r"^COPY(?: --\S+)? \. /app$", dockerfile, re.MULTILINE) is None
+    for source in (
+        "pyproject.toml",
+        "alembic.ini",
+        "src",
+        "migrations",
+        "config",
+        "demo_suites",
+        "demo_target",
+        "scripts",
+    ):
+        assert re.search(rf"^COPY .*\b{source}\b", dockerfile, re.MULTILINE)
+    assert "compose.yaml" not in dockerfile
+
+
+def test_image_allowlisted_sources_do_not_embed_compose_database_credentials() -> None:
+    copied_sources = [
+        PROJECT_ROOT / "pyproject.toml",
+        PROJECT_ROOT / "alembic.ini",
+        *(PROJECT_ROOT / "src").rglob("*"),
+        *(PROJECT_ROOT / "migrations").rglob("*"),
+        *(PROJECT_ROOT / "config").rglob("*"),
+        *(PROJECT_ROOT / "demo_suites").rglob("*"),
+        *(PROJECT_ROOT / "demo_target").rglob("*"),
+        *(PROJECT_ROOT / "scripts").rglob("*"),
+    ]
+
+    for source in copied_sources:
+        if (
+            source.is_file()
+            and "__pycache__" not in source.parts
+            and source.suffix not in {".pyc", ".pyo"}
+        ):
+            assert b"quality_flow:quality_flow" not in source.read_bytes(), source
+
+
+def test_image_source_is_root_owned_while_runtime_paths_are_service_owned() -> None:
+    dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY --chown=" not in dockerfile
+    assert "chown -R quality-flow:quality-flow /app" not in dockerfile
+    assert "chown -R quality-flow:quality-flow /runtime" in dockerfile
+    assert dockerfile.index("chown -R quality-flow:quality-flow /runtime") < dockerfile.index(
+        "USER quality-flow"
+    )
+
+
+def test_long_running_roles_have_bounded_behavior_aware_healthchecks() -> None:
+    services = _compose()["services"]
+
+    assert services["worker"]["healthcheck"]["test"] == [
+        "CMD",
+        "python",
+        "-m",
+        "scripts.healthcheck",
+        "worker",
+        "--timeout",
+        "2",
+    ]
+    assert services["dispatcher"]["healthcheck"]["test"] == [
+        "CMD",
+        "python",
+        "-m",
+        "scripts.healthcheck",
+        "dispatcher",
+        "/runtime/health/dispatcher",
+        "--max-age",
+        "10",
+        "--timeout",
+        "2",
+    ]
+    assert services["reconciler"]["healthcheck"]["test"] == [
+            "CMD",
+            "python",
+            "-m",
+            "scripts.healthcheck",
+            "heartbeat",
+            "/runtime/health/reconciler",
+            "--max-age",
+            "10",
+    ]
+    for role in ("dispatcher", "reconciler"):
+        assert services[role]["healthcheck"]["timeout"] == "3s"

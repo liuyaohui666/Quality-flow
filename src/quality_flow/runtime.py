@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from datetime import timedelta
 import logging
 import os
+from pathlib import Path
 import signal
 from threading import Event
 
@@ -21,11 +22,17 @@ LOGGER = logging.getLogger(__name__)
 PollAction = Callable[[], int]
 
 
+def touch_heartbeat(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+
+
 def poll_until_stopped(
     action: PollAction,
     *,
     stop: Event,
     interval_seconds: float,
+    on_success: Callable[[], None] | None = None,
 ) -> None:
     """Poll a short transaction boundary until SIGTERM/SIGINT requests shutdown."""
     if interval_seconds <= 0:
@@ -33,6 +40,8 @@ def poll_until_stopped(
     while not stop.is_set():
         try:
             action()
+            if on_success is not None:
+                on_success()
         except Exception:
             LOGGER.exception("poll failed; authoritative state remains in PostgreSQL")
         stop.wait(interval_seconds)
@@ -49,7 +58,7 @@ def _install_shutdown_handlers(stop: Event) -> None:
 def run_dispatcher() -> None:
     database_url = os.environ.get(
         "DATABASE_URL",
-        "postgresql+psycopg://quality_flow:quality_flow@localhost:5432/quality_flow",
+        "postgresql+psycopg://quality_flow@localhost:5432/quality_flow",
     )
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     queue_name = os.environ.get("QUALITY_FLOW_QUEUE", "quality-flow")
@@ -62,10 +71,16 @@ def run_dispatcher() -> None:
         SqlAlchemyOutboxStore(session_factory), publisher.publish
     )
     stop = Event()
+    heartbeat_path = Path(
+        os.environ.get("QUALITY_FLOW_HEALTH_ROOT", "/runtime/health")
+    ) / "dispatcher"
     _install_shutdown_handlers(stop)
     try:
         poll_until_stopped(
-            dispatcher.dispatch_once, stop=stop, interval_seconds=interval
+            dispatcher.dispatch_once,
+            stop=stop,
+            interval_seconds=interval,
+            on_success=lambda: touch_heartbeat(heartbeat_path),
         )
     finally:
         celery_app.close()
@@ -75,7 +90,7 @@ def run_dispatcher() -> None:
 def run_reconciler() -> None:
     database_url = os.environ.get(
         "DATABASE_URL",
-        "postgresql+psycopg://quality_flow:quality_flow@localhost:5432/quality_flow",
+        "postgresql+psycopg://quality_flow@localhost:5432/quality_flow",
     )
     interval = float(os.environ.get("QUALITY_FLOW_RECONCILE_INTERVAL_SECONDS", "2"))
     lease_seconds = float(os.environ.get("QUALITY_FLOW_LEASE_SECONDS", "30"))
@@ -83,12 +98,16 @@ def run_reconciler() -> None:
     session_factory = make_session_factory(engine)
     reconciler = LeaseReconciler(session_factory)
     stop = Event()
+    heartbeat_path = Path(
+        os.environ.get("QUALITY_FLOW_HEALTH_ROOT", "/runtime/health")
+    ) / "reconciler"
     _install_shutdown_handlers(stop)
     try:
         poll_until_stopped(
             reconciler.reconcile_once,
             stop=stop,
             interval_seconds=min(interval, max(0.1, lease_seconds / 2)),
+            on_success=lambda: touch_heartbeat(heartbeat_path),
         )
     finally:
         engine.dispose()

@@ -16,7 +16,7 @@ TERMINAL_STATUSES = {"completed", "infra_failed", "timed_out"}
 
 
 class ApiClient(Protocol):
-    def get(self, path: str) -> Any: ...
+    def get(self, path: str, *, timeout: float) -> Any: ...
 
 
 class WaitTimeout(TimeoutError):
@@ -44,14 +44,24 @@ def wait_for_terminal(
         raise ValueError("timeout and poll interval must be positive")
     deadline = monotonic() + timeout_seconds
     last_observed: dict[str, Any] | None = None
-    while (remaining := deadline - monotonic()) > 0:
-        response = client.get(f"/api/v1/runs/{run_id}")
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise WaitTimeout(run_id, last_observed)
+        try:
+            response = client.get(
+                f"/api/v1/runs/{run_id}", timeout=remaining
+            )
+        except httpx.TimeoutException as error:
+            raise WaitTimeout(run_id, last_observed) from error
         response.raise_for_status()
         last_observed = response.json()
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise WaitTimeout(run_id, last_observed)
         if last_observed.get("status") in TERMINAL_STATUSES:
             return last_observed
         sleep(min(poll_interval, remaining))
-    raise WaitTimeout(run_id, last_observed)
 
 
 def terminal_exit_code(run: dict[str, Any]) -> int:

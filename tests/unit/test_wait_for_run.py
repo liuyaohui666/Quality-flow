@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 
 from scripts import wait_for_run
@@ -21,8 +22,10 @@ class FakeResponse:
 class FakeClient:
     def __init__(self, payloads: list[dict[str, str]]) -> None:
         self._payloads = iter(payloads)
+        self.timeouts: list[float] = []
 
-    def get(self, _path: str) -> FakeResponse:
+    def get(self, _path: str, *, timeout: float) -> FakeResponse:
+        self.timeouts.append(timeout)
         return FakeResponse(next(self._payloads))
 
 
@@ -33,7 +36,7 @@ def test_wait_for_terminal_returns_the_first_terminal_payload() -> None:
             {"status": "completed", "outcome": "passed"},
         ]
     )
-    ticks = iter((0.0, 0.0, 0.1, 0.2))
+    ticks = iter((0.0, 0.0, 0.1, 0.2, 0.3))
 
     result = wait_for_run.wait_for_terminal(
         client,
@@ -46,11 +49,12 @@ def test_wait_for_terminal_returns_the_first_terminal_payload() -> None:
 
     assert result == {"status": "completed", "outcome": "passed"}
     assert wait_for_run.terminal_exit_code(result) == 0
+    assert client.timeouts == pytest.approx([1.0, 0.8])
 
 
 def test_wait_timeout_carries_last_observed_json() -> None:
     client = FakeClient([{"status": "running", "outcome": "unknown"}])
-    ticks = iter((0.0, 0.1, 1.0))
+    ticks = iter((0.0, 0.1, 0.2, 1.0))
 
     with pytest.raises(wait_for_run.WaitTimeout) as captured:
         wait_for_run.wait_for_terminal(
@@ -67,6 +71,53 @@ def test_wait_timeout_carries_last_observed_json() -> None:
         "outcome": "unknown",
     }
     assert json.loads(str(captured.value))["last_observed"]["status"] == "running"
+
+
+def test_late_terminal_response_is_rejected_after_the_global_deadline() -> None:
+    client = FakeClient([{"status": "completed", "outcome": "passed"}])
+    ticks = iter((0.0, 0.2, 1.1))
+
+    with pytest.raises(wait_for_run.WaitTimeout) as captured:
+        wait_for_run.wait_for_terminal(
+            client,
+            "4e908c97-689f-4e1e-9c37-5eb508c2aca3",
+            timeout_seconds=1,
+            poll_interval=0.01,
+            monotonic=lambda: next(ticks),
+            sleep=lambda _seconds: None,
+        )
+
+    assert client.timeouts == pytest.approx([0.8])
+    assert captured.value.last_observed == {
+        "status": "completed",
+        "outcome": "passed",
+    }
+
+
+def test_request_timeout_at_deadline_becomes_wait_timeout() -> None:
+    class TimingOutClient:
+        def __init__(self) -> None:
+            self.timeout: float | None = None
+
+        def get(self, _path: str, *, timeout: float):
+            self.timeout = timeout
+            raise httpx.ReadTimeout("request exceeded remaining deadline")
+
+    client = TimingOutClient()
+    ticks = iter((0.0, 0.25))
+
+    with pytest.raises(wait_for_run.WaitTimeout) as captured:
+        wait_for_run.wait_for_terminal(
+            client,
+            "4e908c97-689f-4e1e-9c37-5eb508c2aca3",
+            timeout_seconds=1,
+            poll_interval=0.01,
+            monotonic=lambda: next(ticks),
+            sleep=lambda _seconds: None,
+        )
+
+    assert client.timeout == pytest.approx(0.75)
+    assert captured.value.last_observed is None
 
 
 @pytest.mark.parametrize(

@@ -81,42 +81,46 @@ def _assert_path_free(value: Any) -> None:
             _assert_path_free(nested)
 
 
-@pytest.fixture(scope="session")
-def scenario_runs(api_client: httpx.Client) -> dict[tuple[str, str], dict[str, Any]]:
-    observed: dict[tuple[str, str], dict[str, Any]] = {}
-    for suite_id, scenario, status, outcome in SCENARIOS:
-        run_id = _submit(
-            api_client,
-            suite_id,
-            scenario,
-            key=f"e2e-{suite_id}-{scenario}-{uuid4()}",
-        )
-        run = wait_for_terminal_run(
-            api_client, run_id, expected=(status, outcome), timeout_seconds=90
-        )
-        events_response = api_client.get(f"/api/v1/runs/{run_id}/events")
-        artifacts_response = api_client.get(f"/api/v1/runs/{run_id}/artifacts")
-        events_response.raise_for_status()
-        artifacts_response.raise_for_status()
-        observed[(suite_id, scenario)] = {
-            "run": run,
-            "events": events_response.json()["events"],
-            "artifacts": artifacts_response.json()["artifacts"],
-        }
-    return observed
+def _observe_scenario(
+    api_client: httpx.Client,
+    suite_id: str,
+    scenario: str,
+    *,
+    expected: tuple[str, str],
+) -> dict[str, Any]:
+    run_id = _submit(
+        api_client,
+        suite_id,
+        scenario,
+        key=f"e2e-{suite_id}-{scenario}-{uuid4()}",
+    )
+    run = wait_for_terminal_run(
+        api_client, run_id, expected=expected, timeout_seconds=90
+    )
+    events_response = api_client.get(f"/api/v1/runs/{run_id}/events")
+    artifacts_response = api_client.get(f"/api/v1/runs/{run_id}/artifacts")
+    events_response.raise_for_status()
+    artifacts_response.raise_for_status()
+    return {
+        "run": run,
+        "events": events_response.json()["events"],
+        "artifacts": artifacts_response.json()["artifacts"],
+    }
 
 
 @pytest.mark.parametrize(
     ("suite_id", "scenario", "status", "outcome"), SCENARIOS
 )
 def test_registered_demo_scenarios(
-    scenario_runs: dict[tuple[str, str], dict[str, Any]],
+    api_client: httpx.Client,
     suite_id: str,
     scenario: str,
     status: str,
     outcome: str,
 ) -> None:
-    evidence = scenario_runs[(suite_id, scenario)]
+    evidence = _observe_scenario(
+        api_client, suite_id, scenario, expected=(status, outcome)
+    )
     run = evidence["run"]
     events = evidence["events"]
     artifacts = evidence["artifacts"]
@@ -142,7 +146,20 @@ def test_registered_demo_scenarios(
     _assert_path_free({"events": events, "artifacts": artifacts})
 
     if suite_id == "demo-api" and scenario != "slow":
-        assert run["case_summary"]["total"] == 1
+        expected_summary = (
+            {"total": 1, "passed": 1, "failed": 0, "errors": 0, "skipped": 0}
+            if scenario == "ok"
+            else {"total": 1, "passed": 0, "failed": 1, "errors": 0, "skipped": 0}
+        )
+        assert run["case_summary"] == expected_summary
+        assert run["attempts"][0]["status"] == (
+            "passed" if scenario == "ok" else "test_failed"
+        )
+        assert sorted(artifact["artifact_type"] for artifact in artifacts) == [
+            "junit_xml",
+            "stderr",
+            "stdout",
+        ]
         assert len(run["gates"]) == 1
         assert run["gates"][0]["gate_type"] == "functional"
         assert run["gates"][0]["passed"] is (scenario == "ok")
@@ -188,16 +205,43 @@ def test_duplicate_submission_has_one_effective_attempt_and_terminal_event(
         api_client, run_id, expected=("completed", "passed"), timeout_seconds=90
     )
     events = api_client.get(f"/api/v1/runs/{run_id}/events").json()["events"]
+    artifacts = api_client.get(f"/api/v1/runs/{run_id}/artifacts").json()[
+        "artifacts"
+    ]
 
     assert len(run["attempts"]) == 1
+    assert run["case_summary"] == {
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+    }
+    assert run["gates"] == [
+        {"gate_type": "functional", "passed": True, "reason_codes": []}
+    ]
+    assert sorted(artifact["artifact_type"] for artifact in artifacts) == [
+        "junit_xml",
+        "stderr",
+        "stdout",
+    ]
+    assert {artifact["attempt_id"] for artifact in artifacts} == {
+        run["attempts"][0]["attempt_id"]
+    }
+    assert [event["event_type"] for event in events].count("run.queued") == 1
+    assert [event["event_type"] for event in events].count("run.started") == 1
     assert [event["event_type"] for event in events].count("run.finished") == 1
 
 
 def test_artifacts_are_owned_by_distinct_attempts(
-    scenario_runs: dict[tuple[str, str], dict[str, Any]],
+    api_client: httpx.Client,
 ) -> None:
-    first = scenario_runs[("demo-api", "ok")]
-    second = scenario_runs[("demo-api", "error")]
+    first = _observe_scenario(
+        api_client, "demo-api", "ok", expected=("completed", "passed")
+    )
+    second = _observe_scenario(
+        api_client, "demo-api", "error", expected=("completed", "failed")
+    )
     first_ids = {artifact["artifact_id"] for artifact in first["artifacts"]}
     second_ids = {artifact["artifact_id"] for artifact in second["artifacts"]}
     first_attempts = {artifact["attempt_id"] for artifact in first["artifacts"]}

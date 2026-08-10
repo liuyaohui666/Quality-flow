@@ -83,58 +83,60 @@ class RunWorker:
             return False
 
         try:
-            claimed, runner, workspace, spec = self._prepare_execution(lease)
-        except WorkerSetupError as error:
-            _cleanup_attempt_workspace(lease, self._workspace_root)
-            self._record_setup_failure(lease, str(error))
-            return True
+            try:
+                claimed, runner, workspace, spec = self._prepare_execution(lease)
+            except WorkerSetupError as error:
+                self._record_setup_failure(lease, str(error))
+                return True
 
-        def heartbeat() -> None:
-            with SqlAlchemyUnitOfWork(self._session_factory) as uow:
-                uow.runs.heartbeat(
-                    claimed.attempt_id,
-                    claimed.lease_token,
-                    now=self._clock(),
-                    lease_duration=self._lease_duration,
-                )
-                uow.commit()
+            def heartbeat() -> None:
+                with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+                    uow.runs.heartbeat(
+                        claimed.attempt_id,
+                        claimed.lease_token,
+                        now=self._clock(),
+                        lease_duration=self._lease_duration,
+                    )
+                    uow.commit()
 
-        try:
-            outcome = runner.run(spec, workspace, heartbeat)
-        except RunnerConfigurationError as error:
-            self._record_setup_failure(lease, f"runner setup: {error}")
-            return True
+            try:
+                outcome = runner.run(spec, workspace, heartbeat)
+            except RunnerConfigurationError as error:
+                self._record_setup_failure(lease, f"runner setup: {error}")
+                return True
 
-        outcome = _normalize_outcome(outcome)
-        try:
-            stored_artifacts = tuple(
-                self._artifact_store.put(
-                    artifact.source_path,
-                    ArtifactMetadata(
-                        run_id=claimed.run_id,
-                        attempt_id=claimed.attempt_id,
-                        artifact_type=artifact.artifact_type,
-                        mime_type=artifact.mime_type,
-                    ),
-                    attempt_workspace=artifact.source_root,
+            outcome = _normalize_outcome(outcome)
+            try:
+                stored_artifacts = tuple(
+                    self._artifact_store.put(
+                        artifact.source_path,
+                        ArtifactMetadata(
+                            run_id=claimed.run_id,
+                            attempt_id=claimed.attempt_id,
+                            artifact_type=artifact.artifact_type,
+                            mime_type=artifact.mime_type,
+                        ),
+                        attempt_workspace=artifact.source_root,
+                    )
+                    for artifact in outcome.artifacts
                 )
-                for artifact in outcome.artifacts
-            )
-            persisted_outcome = _run_outcome(outcome)
-            with SqlAlchemyUnitOfWork(self._session_factory) as uow:
-                uow.runs.record_terminal_aggregate(
-                    claimed.run_id,
-                    claimed.attempt_id,
-                    claimed.lease_token,
-                    outcome,
-                    persisted_outcome,
-                    stored_artifacts,
-                    now=self._clock(),
-                )
-                uow.commit()
-            return True
+                persisted_outcome = _run_outcome(outcome)
+                with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+                    uow.runs.record_terminal_aggregate(
+                        claimed.run_id,
+                        claimed.attempt_id,
+                        claimed.lease_token,
+                        outcome,
+                        persisted_outcome,
+                        stored_artifacts,
+                        now=self._clock(),
+                    )
+                    uow.commit()
+                return True
+            finally:
+                _cleanup_staging_roots(outcome, self._staging_root)
         finally:
-            _cleanup_staging_roots(outcome, self._staging_root)
+            _cleanup_attempt_workspace(lease, self._workspace_root)
 
     def _claim(self, run_id: UUID, worker_id: str | None) -> ClaimedLease | None:
         with SqlAlchemyUnitOfWork(self._session_factory) as uow:
@@ -283,6 +285,10 @@ def _cleanup_attempt_workspace(lease: ClaimedLease, workspace_root: Path) -> Non
     workspace = workspace_root / str(lease.run_id) / str(lease.attempt_id)
     try:
         shutil.rmtree(workspace)
+    except OSError:
+        pass
+    try:
+        workspace.parent.rmdir()
     except OSError:
         pass
 

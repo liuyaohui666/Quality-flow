@@ -315,7 +315,11 @@ def _assert_single_infra_terminal(session_factory, run_id, reason: str) -> None:
 
 
 class MisconfiguredRunner:
+    def __init__(self) -> None:
+        self.workspace: Path | None = None
+
     def run(self, spec, workspace, heartbeat):
+        self.workspace = workspace
         raise RunnerConfigurationError("deliberately invalid runner setup")
 
 
@@ -351,9 +355,10 @@ def test_claimed_worker_terminalizes_invalid_snapshot_source_and_runner_setup(
     runner_setup_id = _create_snapshot_run(
         session_factory, source, "runner-configuration"
     )
+    runner = MisconfiguredRunner()
     worker = RunWorker(
         session_factory,
-        runners={"pytest": MisconfiguredRunner()},
+        runners={"pytest": runner},
         artifact_store=FileArtifactStore(tmp_path / "artifacts"),
         workspace_root=tmp_path / "workspaces",
         staging_root=tmp_path / "staging",
@@ -369,6 +374,40 @@ def test_claimed_worker_terminalizes_invalid_snapshot_source_and_runner_setup(
     _assert_single_infra_terminal(session_factory, missing_source_id, "source")
     _assert_single_infra_terminal(session_factory, unknown_runner_id, "runner type")
     _assert_single_infra_terminal(session_factory, runner_setup_id, "runner setup")
+    assert runner.workspace is not None
+    assert not runner.workspace.exists()
+    assert not runner.workspace.parent.exists()
+
+
+class UnexpectedFailureRunner:
+    def __init__(self) -> None:
+        self.workspace: Path | None = None
+
+    def run(self, spec, workspace, heartbeat):
+        self.workspace = workspace
+        raise RuntimeError("unexpected runner failure")
+
+
+def test_worker_cleans_attempt_workspace_when_runner_raises_unexpectedly(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(session_factory, source, "unexpected-runner-error")
+    runner = UnexpectedFailureRunner()
+    worker = RunWorker(
+        session_factory,
+        runners={"pytest": runner},
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
+        workspace_root=tmp_path / "workspaces",
+        staging_root=tmp_path / "staging",
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected runner failure"):
+        worker.execute(run_id)
+
+    assert runner.workspace is not None
+    assert not runner.workspace.exists()
 
 
 class PassedWithoutGateRunner:
@@ -696,6 +735,7 @@ def test_terminal_write_persists_entire_aggregate_from_immutable_snapshot(
     assert source_file.read_text(encoding="utf-8") == "trusted snapshot source\n"
     assert runner.call[1] != source
     assert runner.call[1].is_relative_to(tmp_path / "workspaces")
+    assert not runner.call[1].exists()
     assert runner.calls == 1
     assert staging_root.is_dir()
     assert not runner_staging.exists()

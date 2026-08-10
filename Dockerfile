@@ -9,7 +9,13 @@ RUN groupadd --gid 10001 quality-flow \
 
 WORKDIR /app
 
-COPY --chown=quality-flow:quality-flow . /app
+COPY pyproject.toml alembic.ini /app/
+COPY src /app/src
+COPY migrations /app/migrations
+COPY config /app/config
+COPY demo_suites /app/demo_suites
+COPY demo_target /app/demo_target
+COPY scripts /app/scripts
 
 RUN pip install --no-cache-dir ".[dev]" \
     && mkdir -p /runtime/workspaces /runtime/staging /runtime/artifacts \

@@ -52,7 +52,7 @@ def create_worker_celery_app(
 def build_default_worker() -> RunWorker:
     database_url = os.environ.get(
         "DATABASE_URL",
-        "postgresql+psycopg://quality_flow:quality_flow@localhost:5432/quality_flow",
+        "postgresql+psycopg://quality_flow@localhost:5432/quality_flow",
     )
     service_root = Path(
         os.environ.get(

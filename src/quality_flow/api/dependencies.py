@@ -92,12 +92,14 @@ def build_dependencies(project_root: Path | None = None) -> ApiDependencies:
     registry = SuiteRegistry.from_yaml(settings.suites_config_path, settings.project_root)
     database_url = os.environ.get(
         "DATABASE_URL",
-        "postgresql+psycopg://quality_flow:quality_flow@localhost:5432/quality_flow",
+        "postgresql+psycopg://quality_flow@localhost:5432/quality_flow",
     )
     engine = make_engine(database_url)
     session_factory = make_session_factory(engine)
     redis_client = Redis.from_url(
-        os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+        socket_connect_timeout=2.0,
+        socket_timeout=2.0,
     )
 
     def check_readiness() -> None:

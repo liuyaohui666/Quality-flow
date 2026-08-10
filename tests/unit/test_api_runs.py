@@ -330,7 +330,7 @@ def test_ready_checks_redis_as_well_as_postgres_and_registry(
     monkeypatch.setattr(
         dependency_module.Redis,
         "from_url",
-        lambda _url: FakeRedis(),
+        lambda _url, **_kwargs: FakeRedis(),
     )
 
     dependencies = build_dependencies()
@@ -338,3 +338,23 @@ def test_ready_checks_redis_as_well_as_postgres_and_registry(
 
     assert response.status_code == 200
     assert calls == ["postgres", "redis"]
+
+
+def test_dependency_builder_bounds_redis_readiness_socket_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(dependency_module, "make_engine", lambda _url: object())
+    monkeypatch.setattr(
+        dependency_module, "make_session_factory", lambda _engine: object()
+    )
+    monkeypatch.setattr(
+        dependency_module.Redis,
+        "from_url",
+        lambda url, **kwargs: captured.update(url=url, **kwargs) or object(),
+    )
+
+    build_dependencies()
+
+    assert captured["socket_connect_timeout"] == 2.0
+    assert captured["socket_timeout"] == 2.0

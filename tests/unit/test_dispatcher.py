@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+import logging
 from uuid import uuid4
 
 import pytest
@@ -60,6 +61,33 @@ def test_publish_failure_stays_pending_and_increments_attempts() -> None:
     assert dispatcher.dispatch_once() == 0
     assert store.message.published_at is None
     assert store.message.publish_attempts == 1
+
+
+def test_publish_failure_logs_structured_ids_without_exception_secret(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    message = OutboxMessage(uuid4(), uuid4(), 2, None)
+    store = MemoryOutboxStore(message)
+
+    def fail_publish(*, event_id, run_id) -> None:
+        raise ConnectionError("redis://user:do-not-log@broker/0")
+
+    dispatcher = OutboxDispatcher(store, fail_publish)
+
+    with caplog.at_level(logging.WARNING, logger="quality_flow.application.dispatcher"):
+        assert dispatcher.dispatch_once() == 0
+
+    record = caplog.records[-1]
+    assert "outbox publish failed" in record.getMessage()
+    assert record.event_id == str(message.event_id)
+    assert record.run_id == str(message.run_id)
+    assert record.publish_attempt == 3
+    assert str(message.event_id) in caplog.text
+    assert str(message.run_id) in caplog.text
+    assert "publish_attempt=3" in caplog.text
+    assert "do-not-log" not in caplog.text
+    assert store.message.published_at is None
+    assert store.message.publish_attempts == 3
 
 
 def test_outbox_is_still_pending_while_publisher_is_called() -> None:
