@@ -106,7 +106,18 @@ class RunAttempt(Base):
             "'infra_failed', 'timed_out', 'abandoned')",
             name="ck_run_attempts_status",
         ),
+        CheckConstraint(
+            "status <> 'running' OR (lease_token IS NOT NULL AND "
+            "heartbeat_at IS NOT NULL AND lease_expires_at IS NOT NULL AND "
+            "lease_expires_at > heartbeat_at)",
+            name="ck_run_attempts_running_lease",
+        ),
         Index("ix_run_attempts_status_created_at", "status", "created_at"),
+        Index(
+            "ix_run_attempts_status_lease_expires_at",
+            "status",
+            "lease_expires_at",
+        ),
     )
 
     attempt_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)

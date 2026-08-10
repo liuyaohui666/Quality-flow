@@ -20,6 +20,7 @@ _SENSITIVE_KEYS = frozenset(
         "access_token",
         "refresh_token",
         "id_token",
+        "lease_token",
         "api_key",
         "x_api_key",
         "secret",

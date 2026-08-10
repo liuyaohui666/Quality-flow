@@ -66,3 +66,10 @@ def test_log_helper_converts_paths_and_exceptions_to_json_safe_values() -> None:
     assert payload["path"] == "private-result.xml"
     assert payload["error"] == {"type": "ValueError", "message": "parse failed"}
     json.dumps(payload)
+
+
+def test_lease_token_is_always_redacted() -> None:
+    lease_token = str(uuid4())
+
+    assert redact({"lease_token": lease_token}) == {"lease_token": "***"}
+    assert redact_for_log({"leaseToken": lease_token}) == {"leaseToken": "***"}
