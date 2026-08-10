@@ -6,13 +6,40 @@ suites:
       - python
       - -m
       - pytest
-      - tests
-    timeout_seconds: 300
+      - demo_suites/api/test_target.py
+      - -q
+    timeout_seconds: 3
     allowed_parameters:
       scenario:
-        - smoke
-        - regression
+        - ok
+        - error
+        - slow
     gate_policy:
       min_pass_rate: 1.0
       max_failures: 0
+    source_revision: main
+  demo-load:
+    runner_type: locust
+    working_directory: .
+    argv:
+      - python
+      - -m
+      - locust
+      - -f
+      - demo_suites/load/locustfile.py
+      - --users
+      - '1'
+      - --spawn-rate
+      - '10'
+      - --run-time
+      - 3s
+    timeout_seconds: 15
+    allowed_parameters:
+      scenario:
+        - baseline
+        - degraded
+    gate_policy:
+      max_error_rate: 0.01
+      max_p95_ms: 250
+      min_requests: 3
     source_revision: main

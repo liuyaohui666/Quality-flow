@@ -85,8 +85,8 @@ def test_duplicate_idempotency_key_returns_existing_run(
 ) -> None:
     service = RunService(fake_uow, registry)
 
-    first = service.create_run("demo-api", "same-key", {"scenario": "smoke"})
-    second = service.create_run("demo-api", "same-key", {"scenario": "smoke"})
+    first = service.create_run("demo-api", "same-key", {"scenario": "ok"})
+    second = service.create_run("demo-api", "same-key", {"scenario": "ok"})
 
     assert first.run_id == second.run_id
     assert len(fake_uow.created_runs) == 1
@@ -99,18 +99,24 @@ def test_create_run_stores_resolved_suite_and_gate_policy_snapshots(
     fake_uow: FakeUnitOfWork, registry: SuiteRegistry
 ) -> None:
     run = RunService(fake_uow, registry).create_run(
-        "demo-api", "new-key", {"scenario": "regression"}
+        "demo-api", "new-key", {"scenario": "error"}
     )
 
     assert run.status is RunStatus.QUEUED
-    assert run.parameters == {"scenario": "regression"}
+    assert run.parameters == {"scenario": "error"}
     assert run.suite_snapshot == {
         "suite_id": "demo-api",
         "runner_type": "pytest",
         "working_directory": str(Path(__file__).resolve().parents[2]),
-        "argv": ["python", "-m", "pytest", "tests"],
-        "timeout_seconds": 300,
-        "allowed_parameters": {"scenario": ["smoke", "regression"]},
+        "argv": [
+            "python",
+            "-m",
+            "pytest",
+            "demo_suites/api/test_target.py",
+            "-q",
+        ],
+        "timeout_seconds": 3,
+        "allowed_parameters": {"scenario": ["ok", "error", "slow"]},
         "source_revision": "main",
     }
     assert run.gate_policy_snapshot == {

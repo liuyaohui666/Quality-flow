@@ -40,12 +40,21 @@ def evaluate_performance_gate(
         reason_codes.append("min_requests")
     if policy.max_p95_ms is not None and summary.p95_ms > policy.max_p95_ms:
         reason_codes.append("p95_ms")
+    if (
+        policy.max_error_rate is not None
+        and summary.failure_ratio > policy.max_error_rate
+    ):
+        reason_codes.append("error_rate")
+
+    details = {
+        "request_count": float(summary.request_count),
+        "p95_ms": summary.p95_ms,
+    }
+    if policy.max_error_rate is not None:
+        details["error_rate"] = summary.failure_ratio
 
     return GateResult(
         passed=not reason_codes,
         reason_codes=tuple(reason_codes),
-        details={
-            "request_count": float(summary.request_count),
-            "p95_ms": summary.p95_ms,
-        },
+        details=details,
     )

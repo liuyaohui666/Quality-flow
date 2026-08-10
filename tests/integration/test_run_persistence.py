@@ -64,8 +64,8 @@ def test_duplicate_keys_persist_one_run_and_one_outbox_event(
 ) -> None:
     service = RunService(SqlAlchemyUnitOfWork(session_factory), registry)
 
-    first = service.create_run("demo-api", "same-key", {"scenario": "smoke"})
-    second = service.create_run("demo-api", "same-key", {"scenario": "smoke"})
+    first = service.create_run("demo-api", "same-key", {"scenario": "ok"})
+    second = service.create_run("demo-api", "same-key", {"scenario": "ok"})
 
     assert first.run_id == second.run_id
     assert _counts(session_factory) == (1, 1, 1)
@@ -73,7 +73,7 @@ def test_duplicate_keys_persist_one_run_and_one_outbox_event(
         stored = session.get(Run, first.run_id)
         assert stored is not None
         assert stored.status is RunStatus.QUEUED
-        assert stored.parameters == {"scenario": "smoke"}
+        assert stored.parameters == {"scenario": "ok"}
         assert stored.suite_snapshot["runner_type"] == "pytest"
         assert stored.gate_policy_snapshot["min_pass_rate"] == 1.0
         assert stored.outcome is RunOutcome.UNKNOWN
@@ -100,7 +100,7 @@ def test_commit_constraint_failure_rolls_back_run_event_and_outbox(
     service = RunService(ConstraintFailingOutboxUnitOfWork(session_factory), registry)
 
     with pytest.raises(IntegrityError):
-        service.create_run("demo-api", "rollback-key", {"scenario": "smoke"})
+        service.create_run("demo-api", "rollback-key", {"scenario": "ok"})
 
     assert _counts(session_factory) == (0, 0, 0)
 
@@ -137,7 +137,7 @@ def test_concurrent_first_submission_returns_one_persisted_run(
 
     def submit() -> Run:
         service = RunService(BarrierUnitOfWork(session_factory, barrier), registry)
-        return service.create_run("demo-api", "concurrent-key", {"scenario": "smoke"})
+        return service.create_run("demo-api", "concurrent-key", {"scenario": "ok"})
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         first_future = executor.submit(submit)
@@ -153,7 +153,7 @@ def test_repository_claims_queued_run_and_records_terminal_result(
     session_factory, registry: SuiteRegistry
 ) -> None:
     created = RunService(SqlAlchemyUnitOfWork(session_factory), registry).create_run(
-        "demo-api", "claim-key", {"scenario": "regression"}
+        "demo-api", "claim-key", {"scenario": "error"}
     )
 
     with SqlAlchemyUnitOfWork(session_factory) as uow:
@@ -185,8 +185,8 @@ def test_claim_targets_requested_run_and_duplicate_delivery_is_a_no_op(
     session_factory, registry: SuiteRegistry
 ) -> None:
     service = RunService(SqlAlchemyUnitOfWork(session_factory), registry)
-    first = service.create_run("demo-api", "claim-first", {"scenario": "smoke"})
-    second = service.create_run("demo-api", "claim-second", {"scenario": "smoke"})
+    first = service.create_run("demo-api", "claim-first", {"scenario": "ok"})
+    second = service.create_run("demo-api", "claim-second", {"scenario": "ok"})
 
     with SqlAlchemyUnitOfWork(session_factory) as uow:
         claimed = uow.runs.claim_queued_run(second.run_id, worker_id="worker-2")
@@ -241,7 +241,7 @@ def test_run_version_detects_concurrent_updates(
     session_factory, registry: SuiteRegistry
 ) -> None:
     created = RunService(SqlAlchemyUnitOfWork(session_factory), registry).create_run(
-        "demo-api", "version-key", {"scenario": "smoke"}
+        "demo-api", "version-key", {"scenario": "ok"}
     )
     first_session = session_factory()
     second_session = session_factory()
@@ -263,7 +263,7 @@ def test_repository_rejects_untrusted_terminal_result_combination(
     session_factory, registry: SuiteRegistry
 ) -> None:
     created = RunService(SqlAlchemyUnitOfWork(session_factory), registry).create_run(
-        "demo-api", "invalid-terminal-key", {"scenario": "smoke"}
+        "demo-api", "invalid-terminal-key", {"scenario": "ok"}
     )
     with SqlAlchemyUnitOfWork(session_factory) as uow:
         claimed = uow.runs.claim_queued_run(created.run_id)

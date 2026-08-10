@@ -58,6 +58,22 @@ def test_performance_gate_checks_minimum_requests_and_p95() -> None:
     assert result.details == {"request_count": 99.0, "p95_ms": 250.0}
 
 
+def test_performance_gate_rejects_failure_ratio_above_error_threshold() -> None:
+    result = evaluate_performance_gate(
+        PerformanceSummary(
+            request_count=100,
+            p95_ms=50,
+            failure_ratio=0.06,
+            failure_count=6,
+        ),
+        GatePolicy(max_error_rate=0.05),
+    )
+
+    assert result.passed is False
+    assert result.reason_codes == ("error_rate",)
+    assert result.details["error_rate"] == pytest.approx(0.06)
+
+
 def test_gate_result_is_immutable_including_details() -> None:
     result = GateResult(passed=True, reason_codes=(), details={"pass_rate": 1.0})
 

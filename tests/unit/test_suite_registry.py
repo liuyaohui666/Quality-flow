@@ -29,6 +29,34 @@ def test_registry_rejects_parameter_outside_allowlist(registry: SuiteRegistry) -
         suite.resolve_parameters({"scenario": "; rm -rf /"})
 
 
+def test_repository_registry_points_to_both_demo_runner_suites(
+    registry: SuiteRegistry,
+) -> None:
+    api_suite = registry.get("demo-api")
+    load_suite = registry.get("demo-load")
+
+    assert api_suite.runner_type == "pytest"
+    assert api_suite.argv == (
+        "python",
+        "-m",
+        "pytest",
+        "demo_suites/api/test_target.py",
+        "-q",
+    )
+    assert api_suite.resolve_parameters({"scenario": "ok"}) == {"scenario": "ok"}
+    assert load_suite.runner_type == "locust"
+    assert load_suite.argv[:5] == (
+        "python",
+        "-m",
+        "locust",
+        "-f",
+        "demo_suites/load/locustfile.py",
+    )
+    assert load_suite.resolve_parameters({"scenario": "degraded"}) == {
+        "scenario": "degraded"
+    }
+
+
 def test_settings_rejects_symlinked_config_outside_project_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
