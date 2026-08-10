@@ -77,3 +77,27 @@ def test_settings_rejects_symlinked_config_outside_project_root(
 
     with pytest.raises(ValueError, match="project-relative"):
         Settings.from_environment(project_root)
+
+
+def test_settings_uses_explicit_absolute_project_root_from_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "image-source"
+    config = project_root / "config" / "suites.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("suites: {}\n", encoding="utf-8")
+    monkeypatch.setenv("QUALITY_FLOW_PROJECT_ROOT", str(project_root))
+
+    settings = Settings.from_environment(tmp_path / "site-packages")
+
+    assert settings.project_root == project_root.resolve()
+    assert settings.suites_config_path == config.resolve()
+
+
+def test_settings_rejects_relative_explicit_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QUALITY_FLOW_PROJECT_ROOT", "relative/source")
+
+    with pytest.raises(ValueError, match="QUALITY_FLOW_PROJECT_ROOT"):
+        Settings.from_environment(tmp_path)

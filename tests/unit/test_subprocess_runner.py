@@ -184,6 +184,45 @@ def test_blocked_heartbeat_cannot_extend_hard_process_timeout(
     assert elapsed < 1.5
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group regression")
+def test_posix_timeout_reaps_a_spawned_child_process(tmp_path: Path) -> None:
+    root = tmp_path / "root.py"
+    root.write_text(
+        """\
+import subprocess
+from pathlib import Path
+import sys
+import time
+
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+Path("child.pid").write_text(str(child.pid), encoding="ascii")
+time.sleep(30)
+""",
+        encoding="utf-8",
+    )
+    result_directory = tmp_path / "results"
+    result_directory.mkdir()
+
+    execution = SafeSubprocessExecutor(poll_interval_seconds=0.02).execute(
+        [sys.executable, str(root)],
+        workspace=tmp_path,
+        allowed_workspace_root=tmp_path,
+        timeout_seconds=0.5,
+        heartbeat=lambda: None,
+        result_directory=result_directory,
+        environment=build_clean_environment({}),
+    )
+    child_pid = int((tmp_path / "child.pid").read_text(encoding="ascii"))
+    try:
+        assert execution.timed_out is True
+        assert not psutil.pid_exists(child_pid)
+    finally:
+        try:
+            psutil.Process(child_pid).kill()
+        except psutil.Error:
+            pass
+
+
 def test_heartbeat_supervision_uses_a_bounded_daemon_worker_set(
     tmp_path: Path,
 ) -> None:

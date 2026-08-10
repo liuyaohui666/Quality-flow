@@ -16,7 +16,11 @@ class Settings:
 
     @classmethod
     def from_environment(cls, project_root: Path) -> "Settings":
-        resolved_root = project_root.resolve()
+        configured_root = os.environ.get("QUALITY_FLOW_PROJECT_ROOT")
+        selected_root = Path(configured_root) if configured_root else project_root
+        if configured_root and not selected_root.is_absolute():
+            raise ValueError("QUALITY_FLOW_PROJECT_ROOT must be an absolute path")
+        resolved_root = selected_root.resolve()
         configured_path = Path(
             os.environ.get("QUALITY_FLOW_SUITES_CONFIG", "config/suites.yaml")
         )

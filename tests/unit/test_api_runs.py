@@ -296,3 +296,45 @@ def test_ready_is_unavailable_when_suite_registry_is_empty(
     response = TestClient(create_app(dependencies)).get("/health/ready")
 
     assert response.status_code == 503
+
+
+def test_ready_checks_redis_as_well_as_postgres_and_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeSession:
+        def __enter__(self) -> FakeSession:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, *_args: object) -> None:
+            calls.append("postgres")
+
+    class FakeRedis:
+        def ping(self) -> bool:
+            calls.append("redis")
+            return True
+
+    monkeypatch.setattr(dependency_module, "make_engine", lambda _url: object())
+    monkeypatch.setattr(
+        dependency_module, "make_session_factory", lambda _engine: FakeSession
+    )
+    monkeypatch.setattr(
+        dependency_module.SuiteRegistry,
+        "from_yaml",
+        lambda *_args: SuiteRegistry({"demo-api": object()}),
+    )
+    monkeypatch.setattr(
+        dependency_module.Redis,
+        "from_url",
+        lambda _url: FakeRedis(),
+    )
+
+    dependencies = build_dependencies()
+    response = TestClient(create_app(dependencies)).get("/health/ready")
+
+    assert response.status_code == 200
+    assert calls == ["postgres", "redis"]

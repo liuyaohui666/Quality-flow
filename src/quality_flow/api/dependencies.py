@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
+from redis import Redis
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
@@ -95,10 +96,15 @@ def build_dependencies(project_root: Path | None = None) -> ApiDependencies:
     )
     engine = make_engine(database_url)
     session_factory = make_session_factory(engine)
+    redis_client = Redis.from_url(
+        os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    )
 
     def check_readiness() -> None:
         with session_factory() as session:
             session.execute(text("SELECT 1"))
+        if not redis_client.ping():
+            raise RuntimeError("Redis is unavailable")
         if not registry:
             raise RuntimeError("suite registry is unavailable")
 

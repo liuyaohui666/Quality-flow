@@ -1,3 +1,21 @@
+x-app-service: &app-service
+  image: quality-flow:local
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  environment: &app-environment
+    DATABASE_URL: postgresql+psycopg://quality_flow:quality_flow@postgres:5432/quality_flow
+    REDIS_URL: redis://redis:6379/0
+    QUALITY_FLOW_PROJECT_ROOT: /app
+    QUALITY_FLOW_SUITES_CONFIG: config/suites.yaml
+    QUALITY_FLOW_TARGET_URL: http://demo-target:8000
+    QUALITY_FLOW_RUNTIME_ROOT: /runtime
+    QUALITY_FLOW_WORKSPACE_ROOT: /runtime/workspaces
+    QUALITY_FLOW_STAGING_ROOT: /runtime/staging
+    QUALITY_FLOW_ARTIFACT_ROOT: /runtime/artifacts
+    QUALITY_FLOW_QUEUE: quality-flow
+    PYTHONUNBUFFERED: "1"
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -5,28 +23,143 @@ services:
       POSTGRES_DB: quality_flow
       POSTGRES_USER: quality_flow
       POSTGRES_PASSWORD: quality_flow
-    ports:
-      - "5432:5432"
     volumes:
       - quality-flow-postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U quality_flow -d quality_flow"]
       interval: 2s
       timeout: 3s
-      retries: 15
+      retries: 30
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory-policy
+      - noeviction
     volumes:
       - quality-flow-redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 3s
-      retries: 15
+      retries: 30
+
+  migrate:
+    <<: *app-service
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app-service
+    build:
+      context: .
+    command:
+      - uvicorn
+      - quality_flow.api.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ports:
+      - "127.0.0.1:${QUALITY_FLOW_API_PORT:-18000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    stop_grace_period: 10s
+
+  dispatcher:
+    <<: *app-service
+    command: ["python", "-m", "quality_flow.runtime", "dispatcher"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 10s
+
+  worker:
+    <<: *app-service
+    command:
+      - celery
+      - -A
+      - quality_flow.worker.tasks:celery_app
+      - worker
+      - --loglevel=INFO
+      - --queues=quality-flow
+      - --concurrency=1
+      - --hostname=worker@%h
+    volumes:
+      - quality-flow-artifacts:/runtime/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      demo-target:
+        condition: service_healthy
+    stop_grace_period: 15s
+
+  reconciler:
+    <<: *app-service
+    command: ["python", "-m", "quality_flow.runtime", "reconciler"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 10s
+
+  demo-target:
+    image: quality-flow:local
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - uvicorn
+      - demo_target.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=2).read()"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+    stop_grace_period: 10s
 
 volumes:
   quality-flow-postgres:
   quality-flow-redis:
+  quality-flow-artifacts:
