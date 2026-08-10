@@ -29,7 +29,11 @@ class LeaseReconciler:
         reconciled_at = now or self._clock()
         with self._session_factory() as session:
             candidates = session.execute(
-                select(RunAttempt.run_id, RunAttempt.attempt_id)
+                select(
+                    RunAttempt.run_id,
+                    RunAttempt.attempt_id,
+                    RunAttempt.lease_token,
+                )
                 .where(
                     RunAttempt.status == AttemptStatus.RUNNING,
                     RunAttempt.lease_expires_at <= reconciled_at,
@@ -39,7 +43,7 @@ class LeaseReconciler:
             ).all()
 
         reconciled = 0
-        for run_id, attempt_id in candidates:
+        for run_id, attempt_id, candidate_lease_token in candidates:
             with self._session_factory.begin() as session:
                 run = session.scalar(
                     select(Run)
@@ -60,7 +64,7 @@ class LeaseReconciler:
                     run.status is not RunStatus.RUNNING
                     or attempt is None
                     or attempt.status is not AttemptStatus.RUNNING
-                    or attempt.lease_token is None
+                    or attempt.lease_token != candidate_lease_token
                     or attempt.lease_expires_at is None
                     or attempt.lease_expires_at > reconciled_at
                 ):

@@ -81,6 +81,7 @@ def build_default_worker() -> RunWorker:
         },
         artifact_store=FileArtifactStore(artifact_root),
         workspace_root=workspace_root,
+        staging_root=staging_root,
         lease_duration=timedelta(seconds=lease_seconds),
     )
 

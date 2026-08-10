@@ -10,14 +10,19 @@ from threading import Barrier, Event
 from uuid import uuid4
 
 import pytest
+from alembic import command
+from alembic.config import Config
+import psycopg
+from psycopg import sql
 from redis import Redis
-from sqlalchemy import delete, inspect, select
+from sqlalchemy import create_engine, delete, inspect, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, sessionmaker
 
 from quality_flow.application.dispatcher import OutboxDispatcher
 from quality_flow.application.reconciler import LeaseReconciler
 from quality_flow.application.run_service import RunService
-from quality_flow.application.worker import RunWorker, WorkerConfigurationError
+from quality_flow.application.worker import RunWorker
 from quality_flow.domain.enums import AttemptStatus, RunOutcome, RunStatus
 from quality_flow.infrastructure.artifacts import ArtifactMetadata, FileArtifactStore
 from quality_flow.infrastructure.celery_app import CeleryRunPublisher, create_celery_app
@@ -46,6 +51,7 @@ from quality_flow.runners.base import (
     RunnerArtifact,
     RunnerOutcome,
 )
+from quality_flow.runners.subprocess_runner import RunnerConfigurationError
 from quality_flow.suites.registry import SuiteRegistry
 
 
@@ -200,12 +206,23 @@ def test_concurrent_duplicate_delivery_claims_exact_run_once_with_valid_lease(
         runners={"pytest": runner},
         artifact_store=FileArtifactStore(tmp_path / "artifacts"),
         workspace_root=tmp_path / "workspaces",
+        staging_root=tmp_path / "staging",
         lease_duration=timedelta(seconds=30),
         clock=lambda: datetime(2026, 8, 10, 2, 0, tzinfo=UTC),
     )
 
+    simultaneous_start = Barrier(3)
+
+    def deliver(worker_id: str) -> bool:
+        simultaneous_start.wait(timeout=10)
+        return worker.execute(run_id, worker_id=worker_id)
+
     with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(worker.execute, run_id, worker_id="worker-a")
+        deliveries = [
+            executor.submit(deliver, "worker-a"),
+            executor.submit(deliver, "worker-b"),
+        ]
+        simultaneous_start.wait(timeout=10)
         assert runner.started.wait(timeout=10)
         with session_factory() as session:
             running = session.get(Run, run_id)
@@ -217,16 +234,17 @@ def test_concurrent_duplicate_delivery_claims_exact_run_once_with_valid_lease(
             assert untouched.status is RunStatus.QUEUED
             assert attempt.status is AttemptStatus.RUNNING
             assert attempt.attempt_no == 1
-            assert attempt.worker_id == "worker-a"
+            assert attempt.worker_id in {"worker-a", "worker-b"}
             assert attempt.lease_token is not None
             assert attempt.heartbeat_at == datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
             assert attempt.lease_expires_at == datetime(
                 2026, 8, 10, 2, 0, 30, tzinfo=UTC
             )
-        duplicate = executor.submit(worker.execute, run_id, worker_id="worker-b")
-        assert duplicate.result(timeout=10) is False
         runner.release.set()
-        assert first.result(timeout=10) is True
+        assert sorted(delivery.result(timeout=10) for delivery in deliveries) == [
+            False,
+            True,
+        ]
 
     assert len(runner.calls) == 1
     with session_factory() as session:
@@ -237,7 +255,7 @@ def test_concurrent_duplicate_delivery_claims_exact_run_once_with_valid_lease(
         ) == 1
 
 
-def test_worker_rejects_attempt_workspace_root_overlapping_suite_source(
+def test_worker_terminalizes_attempt_workspace_root_overlapping_suite_source(
     session_factory, tmp_path: Path
 ) -> None:
     source = tmp_path / "source"
@@ -248,17 +266,142 @@ def test_worker_rejects_attempt_workspace_root_overlapping_suite_source(
         runners={},
         artifact_store=FileArtifactStore(tmp_path / "artifacts"),
         workspace_root=source / "nested-runtime",
+        staging_root=tmp_path / "staging",
     )
 
-    with pytest.raises(WorkerConfigurationError, match="workspace root"):
-        worker.execute(run_id)
+    assert worker.execute(run_id) is True
 
     with session_factory() as session:
         run = session.get(Run, run_id)
-        assert run.status is RunStatus.QUEUED
-        assert session.scalars(
+        attempt = session.scalar(
             select(RunAttempt).where(RunAttempt.run_id == run_id)
-        ).all() == []
+        )
+        assert (run.status, run.outcome) == (
+            RunStatus.INFRA_FAILED,
+            RunOutcome.UNKNOWN,
+        )
+        assert attempt.status is AttemptStatus.INFRA_FAILED
+        assert "workspace root" in attempt.failure_reason
+        assert len(
+            session.scalars(
+                select(RunEvent).where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "run.finished",
+                )
+            ).all()
+        ) == 1
+
+
+def _assert_single_infra_terminal(session_factory, run_id, reason: str) -> None:
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempts = session.scalars(
+            select(RunAttempt).where(RunAttempt.run_id == run_id)
+        ).all()
+        events = session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.finished",
+            )
+        ).all()
+        assert (run.status, run.outcome) == (
+            RunStatus.INFRA_FAILED,
+            RunOutcome.UNKNOWN,
+        )
+        assert len(attempts) == 1
+        assert attempts[0].status is AttemptStatus.INFRA_FAILED
+        assert reason in attempts[0].failure_reason
+        assert len(events) == 1
+
+
+class MisconfiguredRunner:
+    def run(self, spec, workspace, heartbeat):
+        raise RunnerConfigurationError("deliberately invalid runner setup")
+
+
+def test_claimed_worker_terminalizes_invalid_snapshot_source_and_runner_setup(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+
+    invalid_policy_id = _create_snapshot_run(
+        session_factory, source, "invalid-policy-snapshot"
+    )
+    with session_factory.begin() as session:
+        invalid_policy = session.get(Run, invalid_policy_id)
+        invalid_policy.gate_policy_snapshot = {"unexpected_policy": True}
+
+    missing_source = tmp_path / "missing-source"
+    missing_source.mkdir()
+    missing_source_id = _create_snapshot_run(
+        session_factory, missing_source, "missing-source-snapshot"
+    )
+    missing_source.rmdir()
+
+    unknown_runner_id = _create_snapshot_run(
+        session_factory, source, "unknown-runner-snapshot"
+    )
+    with session_factory.begin() as session:
+        unknown_runner = session.get(Run, unknown_runner_id)
+        snapshot = dict(unknown_runner.suite_snapshot)
+        snapshot["runner_type"] = "not-registered"
+        unknown_runner.suite_snapshot = snapshot
+
+    runner_setup_id = _create_snapshot_run(
+        session_factory, source, "runner-configuration"
+    )
+    worker = RunWorker(
+        session_factory,
+        runners={"pytest": MisconfiguredRunner()},
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
+        workspace_root=tmp_path / "workspaces",
+        staging_root=tmp_path / "staging",
+        clock=lambda: datetime(2026, 8, 10, 2, 0, tzinfo=UTC),
+    )
+
+    assert worker.execute(invalid_policy_id) is True
+    assert worker.execute(missing_source_id) is True
+    assert worker.execute(unknown_runner_id) is True
+    assert worker.execute(runner_setup_id) is True
+
+    _assert_single_infra_terminal(session_factory, invalid_policy_id, "snapshot")
+    _assert_single_infra_terminal(session_factory, missing_source_id, "source")
+    _assert_single_infra_terminal(session_factory, unknown_runner_id, "runner type")
+    _assert_single_infra_terminal(session_factory, runner_setup_id, "runner setup")
+
+
+class PassedWithoutGateRunner:
+    def run(self, spec, workspace, heartbeat):
+        now = datetime(2026, 8, 10, 2, 0, 2, tzinfo=UTC)
+        return RunnerOutcome(
+            attempt_status=AttemptStatus.PASSED,
+            exit_code=0,
+            started_at=now - timedelta(seconds=1),
+            finished_at=now,
+            gate_result=None,
+        )
+
+
+def test_worker_never_persists_passed_without_gate_evaluation(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(session_factory, source, "passed-without-gate")
+    worker = RunWorker(
+        session_factory,
+        runners={"pytest": PassedWithoutGateRunner()},
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
+        workspace_root=tmp_path / "workspaces",
+        staging_root=tmp_path / "staging",
+        clock=lambda: datetime(2026, 8, 10, 2, 0, 3, tzinfo=UTC),
+    )
+
+    assert worker.execute(run_id) is True
+    _assert_single_infra_terminal(
+        session_factory, run_id, "passed without a gate evaluation"
+    )
 
 
 def test_heartbeat_is_fenced_by_running_status_token_and_unexpired_lease(
@@ -342,7 +485,12 @@ def test_heartbeat_is_fenced_by_running_status_token_and_unexpired_lease(
 
     with SqlAlchemyUnitOfWork(session_factory) as uow:
         uow.runs.record_terminal_result(
-            run_id, attempt_id, AttemptStatus.PASSED, RunOutcome.PASSED
+            run_id,
+            attempt_id,
+            token,
+            AttemptStatus.PASSED,
+            RunOutcome.PASSED,
+            now=claimed_at + timedelta(seconds=10),
         )
         uow.commit()
     with pytest.raises(LeaseLostError, match="lease"):
@@ -403,6 +551,69 @@ class RichFailingRunner:
         )
 
 
+class MixedOwnershipArtifactRunner:
+    def __init__(self, external_root: Path, service_child: Path) -> None:
+        self._external_root = external_root
+        self._service_child = service_child
+
+    def run(self, spec, workspace, heartbeat):
+        self._external_root.mkdir()
+        self._service_child.mkdir(parents=True)
+        external = self._external_root / "external.txt"
+        owned = self._service_child / "owned.txt"
+        external.write_text("preserve me", encoding="utf-8")
+        owned.write_text("clean me", encoding="utf-8")
+        now = datetime(2026, 8, 10, 2, 0, 2, tzinfo=UTC)
+        return RunnerOutcome(
+            attempt_status=AttemptStatus.PASSED,
+            exit_code=0,
+            started_at=now - timedelta(seconds=1),
+            finished_at=now,
+            gate_result=GateResult(True, (), {"pass_rate": 1.0}),
+            artifacts=(
+                RunnerArtifact(
+                    "external",
+                    external,
+                    self._external_root,
+                    "text/plain",
+                ),
+                RunnerArtifact(
+                    "owned",
+                    owned,
+                    self._service_child,
+                    "text/plain",
+                ),
+            ),
+        )
+
+
+def test_worker_only_cleans_strict_descendants_of_service_staging_root(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(session_factory, source, "staging-ownership")
+    external_root = tmp_path / "custom-runner-output"
+    staging_root = tmp_path / "service-staging"
+    service_child = staging_root / "attempt-output"
+    runner = MixedOwnershipArtifactRunner(external_root, service_child)
+    worker = RunWorker(
+        session_factory,
+        runners={"pytest": runner},
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
+        workspace_root=tmp_path / "workspaces",
+        staging_root=staging_root,
+        clock=lambda: datetime(2026, 8, 10, 2, 0, 3, tzinfo=UTC),
+    )
+
+    assert worker.execute(run_id) is True
+    assert (external_root / "external.txt").read_text(encoding="utf-8") == (
+        "preserve me"
+    )
+    assert staging_root.is_dir()
+    assert not service_child.exists()
+
+
 def test_terminal_write_persists_entire_aggregate_from_immutable_snapshot(
     session_factory, tmp_path: Path
 ) -> None:
@@ -411,13 +622,17 @@ def test_terminal_write_persists_entire_aggregate_from_immutable_snapshot(
     source_file = source / "suite.py"
     source_file.write_text("trusted snapshot source\n", encoding="utf-8")
     run_id = _create_snapshot_run(session_factory, source, "terminal-aggregate")
-    runner = RichFailingRunner(tmp_path / "runner-staging")
+    staging_root = tmp_path / "runner-staging"
+    staging_root.mkdir()
+    runner_staging = staging_root / "attempt-output"
+    runner = RichFailingRunner(runner_staging)
     artifact_store = FileArtifactStore(tmp_path / "artifacts")
     worker = RunWorker(
         session_factory,
         runners={"pytest": runner},
         artifact_store=artifact_store,
         workspace_root=tmp_path / "workspaces",
+        staging_root=staging_root,
         clock=lambda: datetime(2026, 8, 10, 2, 0, tzinfo=UTC),
     )
 
@@ -482,7 +697,8 @@ def test_terminal_write_persists_entire_aggregate_from_immutable_snapshot(
     assert runner.call[1] != source
     assert runner.call[1].is_relative_to(tmp_path / "workspaces")
     assert runner.calls == 1
-    assert not (tmp_path / "runner-staging").exists()
+    assert staging_root.is_dir()
+    assert not runner_staging.exists()
 
 
 def test_real_terminal_commit_failure_rolls_back_entire_aggregate(
@@ -628,6 +844,70 @@ def test_reconciler_abandons_expired_lease_and_fences_old_worker(
                 (),
                 now=reconciled_at,
             )
+
+
+def test_reconciler_rejects_candidate_when_lease_token_changes_before_lock(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(session_factory, source, "reconcile-token-race")
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        claimed = uow.runs.claim_queued_run(
+            run_id, now=claimed_at, lease_duration=timedelta(seconds=5)
+        )
+        attempt_id = claimed.attempts[-1].attempt_id
+        old_token = claimed.attempts[-1].lease_token
+        uow.commit()
+
+    before_run_lock = Event()
+    release_run_lock = Event()
+
+    class PausingSession(Session):
+        def scalar(self, statement, *args, **kwargs):
+            rendered = str(statement)
+            if "FROM runs" in rendered and "FOR UPDATE" in rendered:
+                before_run_lock.set()
+                assert release_run_lock.wait(timeout=10)
+            return super().scalar(statement, *args, **kwargs)
+
+    pausing_factory = sessionmaker(
+        bind=session_factory.kw["bind"],
+        class_=PausingSession,
+        expire_on_commit=False,
+    )
+    reconcile_at = claimed_at + timedelta(seconds=6)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            LeaseReconciler(pausing_factory).reconcile_once, now=reconcile_at
+        )
+        assert before_run_lock.wait(timeout=10)
+        new_token = uuid4()
+        assert new_token != old_token
+        with session_factory.begin() as session:
+            session.execute(
+                update(RunAttempt)
+                .where(RunAttempt.attempt_id == attempt_id)
+                .values(lease_token=new_token)
+            )
+        release_run_lock.set()
+        assert future.result(timeout=10) == 0
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempt = session.get(RunAttempt, attempt_id)
+        assert (run.status, attempt.status, attempt.lease_token) == (
+            RunStatus.RUNNING,
+            AttemptStatus.RUNNING,
+            new_token,
+        )
+        assert session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.abandoned",
+            )
+        ).all() == []
 
 
 def test_two_reconcilers_append_exactly_one_abandonment_event(
@@ -798,3 +1078,61 @@ def test_schema_enforces_running_lease_completeness_and_stale_lookup_index(
         "status",
         "lease_expires_at",
     )
+
+
+def test_attempt_lease_migration_is_reversible_in_isolated_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    database_name = f"quality_flow_task7_{uuid4().hex}"
+    admin_url = "postgresql://quality_flow@127.0.0.1:55432/postgres"
+    isolated_url = (
+        f"postgresql+psycopg://quality_flow@127.0.0.1:55432/{database_name}"
+    )
+    with psycopg.connect(admin_url, autocommit=True) as connection:
+        connection.execute(
+            sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name))
+        )
+
+    engine = create_engine(isolated_url)
+    try:
+        monkeypatch.setenv("DATABASE_URL", isolated_url)
+        config = Config(str(project_root / "alembic.ini"))
+        command.upgrade(config, "0001_initial_schema")
+        command.upgrade(config, "head")
+        assert "ck_run_attempts_running_lease" in {
+            check["name"]
+            for check in inspect(engine).get_check_constraints("run_attempts")
+        }
+        assert "ix_run_attempts_status_lease_expires_at" in {
+            index["name"] for index in inspect(engine).get_indexes("run_attempts")
+        }
+
+        command.downgrade(config, "0001_initial_schema")
+        assert "ck_run_attempts_running_lease" not in {
+            check["name"]
+            for check in inspect(engine).get_check_constraints("run_attempts")
+        }
+        assert "ix_run_attempts_status_lease_expires_at" not in {
+            index["name"] for index in inspect(engine).get_indexes("run_attempts")
+        }
+
+        command.upgrade(config, "head")
+        assert "ck_run_attempts_running_lease" in {
+            check["name"]
+            for check in inspect(engine).get_check_constraints("run_attempts")
+        }
+        assert "ix_run_attempts_status_lease_expires_at" in {
+            index["name"] for index in inspect(engine).get_indexes("run_attempts")
+        }
+    finally:
+        engine.dispose()
+        with psycopg.connect(admin_url, autocommit=True) as connection:
+            connection.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = %s AND pid <> pg_backend_pid()",
+                (database_name,),
+            )
+            connection.execute(
+                sql.SQL("DROP DATABASE {}").format(sql.Identifier(database_name))
+            )

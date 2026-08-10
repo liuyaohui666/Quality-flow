@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from threading import Barrier
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, func, inspect, select
@@ -19,7 +21,7 @@ from quality_flow.infrastructure.database import (
     make_session_factory,
 )
 from quality_flow.infrastructure.models import OutboxEvent, Run, RunAttempt, RunEvent
-from quality_flow.infrastructure.repositories import RunRepository
+from quality_flow.infrastructure.repositories import LeaseLostError, RunRepository
 from quality_flow.suites.registry import SuiteRegistry
 
 
@@ -156,10 +158,12 @@ def test_repository_claims_queued_run_and_records_terminal_result(
         "demo-api", "claim-key", {"scenario": "error"}
     )
 
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
     with SqlAlchemyUnitOfWork(session_factory) as uow:
-        claimed = uow.runs.claim_queued_run(created.run_id)
+        claimed = uow.runs.claim_queued_run(created.run_id, now=claimed_at)
         assert claimed is not None
         attempt_id = claimed.attempts[-1].attempt_id
+        lease_token = claimed.attempts[-1].lease_token
         assert claimed.status is RunStatus.RUNNING
         assert claimed.attempts[-1].status is AttemptStatus.RUNNING
         uow.commit()
@@ -168,8 +172,10 @@ def test_repository_claims_queued_run_and_records_terminal_result(
         terminal = uow.runs.record_terminal_result(
             created.run_id,
             attempt_id,
+            lease_token,
             AttemptStatus.PASSED,
             RunOutcome.PASSED,
+            now=claimed_at + timedelta(seconds=1),
         )
         uow.commit()
 
@@ -179,6 +185,17 @@ def test_repository_claims_queued_run_and_records_terminal_result(
         attempt = session.get(RunAttempt, attempt_id)
         assert attempt is not None
         assert attempt.status is AttemptStatus.PASSED
+
+    with pytest.raises(LeaseLostError, match="lease"):
+        with SqlAlchemyUnitOfWork(session_factory) as uow:
+            uow.runs.record_terminal_result(
+                created.run_id,
+                attempt_id,
+                lease_token,
+                AttemptStatus.PASSED,
+                RunOutcome.PASSED,
+                now=claimed_at + timedelta(seconds=2),
+            )
 
 
 def test_claim_targets_requested_run_and_duplicate_delivery_is_a_no_op(
@@ -265,10 +282,12 @@ def test_repository_rejects_untrusted_terminal_result_combination(
     created = RunService(SqlAlchemyUnitOfWork(session_factory), registry).create_run(
         "demo-api", "invalid-terminal-key", {"scenario": "ok"}
     )
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
     with SqlAlchemyUnitOfWork(session_factory) as uow:
-        claimed = uow.runs.claim_queued_run(created.run_id)
+        claimed = uow.runs.claim_queued_run(created.run_id, now=claimed_at)
         assert claimed is not None
         attempt_id = claimed.attempts[-1].attempt_id
+        lease_token = claimed.attempts[-1].lease_token
         uow.commit()
 
     with pytest.raises(InvalidStateTransition):
@@ -276,8 +295,10 @@ def test_repository_rejects_untrusted_terminal_result_combination(
             uow.runs.record_terminal_result(
                 created.run_id,
                 attempt_id,
+                lease_token,
                 AttemptStatus.TEST_FAILED,
                 RunOutcome.PASSED,
+                now=claimed_at + timedelta(seconds=1),
             )
             uow.commit()
 
@@ -288,3 +309,46 @@ def test_repository_rejects_untrusted_terminal_result_combination(
         assert stored.status is RunStatus.RUNNING
         assert stored.outcome is RunOutcome.UNKNOWN
         assert attempt.status is AttemptStatus.RUNNING
+
+
+@pytest.mark.parametrize("lease_case", ["wrong", "expired"])
+def test_repository_terminal_result_requires_live_exact_lease(
+    session_factory, registry: SuiteRegistry, lease_case: str
+) -> None:
+    created = RunService(SqlAlchemyUnitOfWork(session_factory), registry).create_run(
+        "demo-api", f"terminal-fence-{lease_case}", {"scenario": "ok"}
+    )
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        claimed = uow.runs.claim_queued_run(
+            created.run_id,
+            now=claimed_at,
+            lease_duration=timedelta(seconds=30),
+        )
+        attempt_id = claimed.attempts[-1].attempt_id
+        lease_token = claimed.attempts[-1].lease_token
+        uow.commit()
+
+    supplied_token = uuid4() if lease_case == "wrong" else lease_token
+    terminal_at = claimed_at + timedelta(
+        seconds=1 if lease_case == "wrong" else 31
+    )
+    with pytest.raises(LeaseLostError, match="lease"):
+        with SqlAlchemyUnitOfWork(session_factory) as uow:
+            uow.runs.record_terminal_result(
+                created.run_id,
+                attempt_id,
+                supplied_token,
+                AttemptStatus.PASSED,
+                RunOutcome.PASSED,
+                now=terminal_at,
+            )
+
+    with session_factory() as session:
+        run = session.get(Run, created.run_id)
+        attempt = session.get(RunAttempt, attempt_id)
+        assert (run.status, run.outcome, attempt.status) == (
+            RunStatus.RUNNING,
+            RunOutcome.UNKNOWN,
+            AttemptStatus.RUNNING,
+        )

@@ -125,28 +125,9 @@ class RunRepository:
         now: datetime | None = None,
     ) -> Run:
         terminal_at = now or datetime.now(UTC)
-        run = self._session.scalar(
-            select(Run).where(Run.run_id == run_id).with_for_update()
+        run, attempt = self._lock_live_attempt(
+            run_id, attempt_id, lease_token, terminal_at
         )
-        if run is None:
-            raise LeaseLostError("run lease owner no longer exists")
-        attempt = self._session.scalar(
-            select(RunAttempt)
-            .where(
-                RunAttempt.run_id == run_id,
-                RunAttempt.attempt_id == attempt_id,
-            )
-            .with_for_update()
-        )
-        if (
-            run.status is not RunStatus.RUNNING
-            or attempt is None
-            or attempt.status is not AttemptStatus.RUNNING
-            or attempt.lease_token != lease_token
-            or attempt.lease_expires_at is None
-            or attempt.lease_expires_at <= terminal_at
-        ):
-            raise LeaseLostError("attempt lease is missing, expired, or no longer running")
 
         terminal_status = resolve_terminal_run_status(
             runner_outcome.attempt_status, outcome
@@ -232,48 +213,73 @@ class RunRepository:
         self,
         run_id: UUID,
         attempt_id: UUID,
+        lease_token: UUID,
         attempt_status: AttemptStatus,
         outcome: RunOutcome,
+        *,
+        now: datetime | None = None,
     ) -> Run:
-        run = self._session.scalar(
-            select(Run)
-            .where(Run.run_id == run_id)
-            .with_for_update()
-            .options(selectinload(Run.attempts))
+        terminal_at = now or datetime.now(UTC)
+        run, attempt = self._lock_live_attempt(
+            run_id, attempt_id, lease_token, terminal_at
         )
-        if run is None:
-            raise LookupError(f"Unknown run: {run_id}")
-        attempt = next(
-            (candidate for candidate in run.attempts if candidate.attempt_id == attempt_id),
-            None,
-        )
-        if attempt is None:
-            raise LookupError(f"Unknown attempt for run {run_id}: {attempt_id}")
 
         terminal_run_status = resolve_terminal_run_status(attempt_status, outcome)
         ensure_attempt_transition(attempt.status, attempt_status)
         ensure_run_transition(run.status, terminal_run_status)
 
-        now = datetime.now(UTC)
         attempt.status = attempt_status
-        attempt.finished_at = now
+        attempt.finished_at = terminal_at
         run.status = terminal_run_status
         run.outcome = outcome
-        run.finished_at = now
-        run.updated_at = now
-        run.events.append(
+        run.finished_at = terminal_at
+        run.updated_at = terminal_at
+        self._session.add(
             RunEvent(
+                run_id=run_id,
                 event_type="run.finished",
                 payload={
                     "status": terminal_run_status.value,
                     "outcome": outcome.value,
                     "attempt_status": attempt_status.value,
                 },
-                created_at=now,
+                created_at=terminal_at,
             )
         )
         self._session.flush()
         return run
+
+    def _lock_live_attempt(
+        self,
+        run_id: UUID,
+        attempt_id: UUID,
+        lease_token: UUID,
+        checked_at: datetime,
+    ) -> tuple[Run, RunAttempt]:
+        """Lock Run then Attempt and prove the caller still owns the live lease."""
+        run = self._session.scalar(
+            select(Run).where(Run.run_id == run_id).with_for_update()
+        )
+        if run is None:
+            raise LeaseLostError("run lease owner no longer exists")
+        attempt = self._session.scalar(
+            select(RunAttempt)
+            .where(
+                RunAttempt.run_id == run_id,
+                RunAttempt.attempt_id == attempt_id,
+            )
+            .with_for_update()
+        )
+        if (
+            run.status is not RunStatus.RUNNING
+            or attempt is None
+            or attempt.status is not AttemptStatus.RUNNING
+            or attempt.lease_token != lease_token
+            or attempt.lease_expires_at is None
+            or attempt.lease_expires_at <= checked_at
+        ):
+            raise LeaseLostError("attempt lease is missing, expired, or no longer running")
+        return run, attempt
 
 
 def _outcome_metrics(outcome: RunnerOutcome) -> tuple[tuple[str, float, str], ...]:
