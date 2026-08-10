@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import httpx
 
 from scripts.ci_gate import run_ci_gate

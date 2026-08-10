@@ -16,6 +16,7 @@ import psycopg
 from psycopg import sql
 from redis import Redis
 from sqlalchemy import create_engine, delete, inspect, select, update
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -58,6 +59,9 @@ from quality_flow.suites.registry import SuiteRegistry
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql+psycopg://quality_flow@127.0.0.1:55432/quality_flow",
+)
+DEFAULT_ADMIN_DATABASE_URL = (
+    "postgresql+psycopg://quality_flow@127.0.0.1:55432/postgres"
 )
 
 
@@ -1125,11 +1129,27 @@ def test_attempt_lease_migration_is_reversible_in_isolated_database(
 ) -> None:
     project_root = Path(__file__).resolve().parents[2]
     database_name = f"quality_flow_task7_{uuid4().hex}"
-    admin_url = "postgresql://quality_flow@127.0.0.1:55432/postgres"
-    isolated_url = (
-        f"postgresql+psycopg://quality_flow@127.0.0.1:55432/{database_name}"
+    admin_url = make_url(
+        os.environ.get(
+            "QUALITY_FLOW_TEST_ADMIN_DATABASE_URL", DEFAULT_ADMIN_DATABASE_URL
+        )
     )
-    with psycopg.connect(admin_url, autocommit=True) as connection:
+    if admin_url.get_backend_name() != "postgresql":
+        raise ValueError("test admin database must use PostgreSQL")
+    connection_parameters = {
+        "dbname": admin_url.database,
+        "host": admin_url.host,
+        "port": admin_url.port,
+        "user": admin_url.username,
+        "password": admin_url.password,
+    }
+    connection_parameters = {
+        key: value for key, value in connection_parameters.items() if value is not None
+    }
+    isolated_url = admin_url.set(
+        drivername="postgresql+psycopg", database=database_name
+    ).render_as_string(hide_password=False)
+    with psycopg.connect(**connection_parameters, autocommit=True) as connection:
         connection.execute(
             sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name))
         )
@@ -1167,7 +1187,7 @@ def test_attempt_lease_migration_is_reversible_in_isolated_database(
         }
     finally:
         engine.dispose()
-        with psycopg.connect(admin_url, autocommit=True) as connection:
+        with psycopg.connect(**connection_parameters, autocommit=True) as connection:
             connection.execute(
                 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
                 "WHERE datname = %s AND pid <> pg_backend_pid()",

@@ -20,7 +20,7 @@ QualityFlow 是一个面向小型测试团队的持续测试执行与质量门�
 4. Worker 在独立 Attempt 工作目录中运行 pytest 或 Locust。
 5. 系统区分测试断言失败、性能门禁失败、执行器错误和执行超时。
 6. JUnit、Locust 指标、stdout、stderr 等产物按 Run/Attempt 隔离并登记元数据。
-7. 用户可以查询运行状态、用例结果、状态事件、质量门禁和产物。
+7. 用户可以查询运行状态、用例汇总、性能指标、状态事件、质量门禁和 Artifact 安全元数据。
 8. CI 脚本可以提交任务、轮询结果，并根据质量门禁返回退出码。
 9. 本地受控靶场可以稳定制造成功、5xx、慢响应和性能退化。
 10. Worker 失联后，Reconciler 将过期 Attempt 标记为 `ABANDONED`，Run 标记为基础设施失败，而不是永久停留在运行中。
@@ -74,6 +74,8 @@ API、Dispatcher、Worker 与 Reconciler 共享同一 Python 代码库，但以�
 
 ## 5. 技术选型及职责
 
+V1 固定使用并验证 Python 3.12；`pyproject.toml` 的最低版本、Docker 镜像和 CI 运行时保持一致。
+
 | 技术 | 第一版职责 |
 | --- | --- |
 | Python 3.12 | 唯一主要开发语言 |
@@ -99,7 +101,7 @@ Celery 是任务运输实现，不拥有领域状态。未来替换 Broker 或�
 - 子进程使用参数数组和 `shell=False`。
 - 工作目录由平台生成并校验在固定根目录内。
 - 子进程只继承白名单环境变量。
-- 密码、Token、Authorization 和 Cookie 不写入 Git、数据库明文或日志。
+- 真实秘密不得进入 Git、日志或明文业务数据；Compose 中的 `quality_flow` 是隔离环境使用的公开的本地演示默认值，不是真实凭据。
 - stdout、stderr 和 Artifact 设置大小上限。
 - 子进程运行设置总超时；超时后终止整个进程组。
 - 每个 Attempt 拥有独立工作目录和 Artifact 命名空间。
@@ -118,10 +120,10 @@ SuiteDefinition 存放在版本控制内的 YAML 文件，不开放 CRUD API。�
 - 固定命令模板
 - 参数白名单
 - 超时时间
-- 环境变量白名单
-- Artifact 规则
 - 质量门禁策略
 - 源码版本标识
+
+环境继承白名单、结果路径、输出上限和 Artifact 安全规则由 Runner 平台统一固定，不是每个 SuiteDefinition 可修改的字段。
 
 创建 Run 时将解析后的执行规格和门禁规则保存为不可变快照。
 
@@ -251,12 +253,11 @@ RunnerOutcome 包含：
 
 ## 10. ArtifactStore
 
-业务代码只依赖：
+业务代码使用：
 
 ```text
-put(source_path, artifact_metadata) -> artifact_uri
-open(artifact_uri)
-delete(artifact_uri)
+put(source_path, artifact_metadata, attempt_workspace) -> StoredArtifact
+resolve(internal_uri) -> Path
 ```
 
 第一版实现本地文件系统：
@@ -264,8 +265,9 @@ delete(artifact_uri)
 - 路径由平台根据 Run/Attempt 生成；
 - 先写临时文件，完成后原子替换；
 - 保存 SHA-256、大小和 MIME；
-- 下载接口只接受 Artifact ID，不接受任意磁盘路径；
-- 设置单文件和单 Run 容量上限；
+- 公开 API 只返回安全元数据，不返回内部 URI 或磁盘路径；
+- V1 不提供 Artifact 文件下载接口；
+- 设置单 Artifact 文件上限；单 Run 总量限制与垃圾回收尚未实现；
 - 后续可替换为 MinIO/S3。
 
 ## 11. 质量门禁
@@ -289,20 +291,14 @@ delete(artifact_uri)
 
 ## 12. 可观测性
 
-第一版采用 JSON 结构化日志。所有关键日志包含：
-
-- `run_id`
-- `attempt_id`
-- `suite_id`
-- `worker_id`
-- `component`
+V1 使用 Compose/进程文本日志，不声称所有日志都采用 JSON 格式。Runner stdout、stderr 和结果文件按 Attempt 归档；部分可靠性事件（例如 Outbox 发布失败）附带不敏感的 Run/Event 标识与尝试次数。
 
 健康检查区分：
 
 - `/health/live`：进程是否存活；
 - `/health/ready`：PostgreSQL、Redis 和 Suite Registry 是否可用。
 
-第一版记录队列等待时间、执行耗时、结果数量、重复提交、Outbox 投递失败、过期租约和 Artifact 错误。Prometheus/Grafana 不进入第一版，指标接口在后续加入。
+V1 当前可诊断信息包括数据库时间戳、RunEvent、Outbox `publish_attempts`、Attempt lease/heartbeat、Runner 输出和服务健康状态。统一指标接口、Prometheus/Grafana 和集中日志属于后续演进。
 
 ## 13. 平台自身测试策略
 
@@ -341,7 +337,7 @@ delete(artifact_uri)
 
 第一版完成必须同时满足：
 
-1. 新电脑只需 Git 与 Docker 即可按 README 启动；
+1. 新电脑只需 Git 与 Docker 即可按 README 启动；首次构建需要访问 Python 包索引，宿主 Ruff/pytest 验证才需要 Python 3.12；
 2. 数据库迁移自动执行；
 3. API 提交测试后快速返回 `202` 与 `run_id`；
 4. Worker 异步执行，API 请求不等待测试结束；
@@ -349,7 +345,7 @@ delete(artifact_uri)
 6. PostgreSQL 是最终状态来源；
 7. 成功、测试失败、基础设施失败和超时可区分；
 8. pytest 与 Locust 至少各有一条通过和一条失败演示；
-9. 日志和产物按 Run/Attempt 隔离；
+9. Runner stdout、stderr 和结果产物按 Run/Attempt 隔离；Docker 服务日志按进程输出；
 10. CI Client 能以退出码表达质量结论；
 11. 核心单元、集成和端到端测试通过；
 12. README 能解释架构、执行流、故障边界、验证命令和已知限制；
@@ -374,7 +370,7 @@ delete(artifact_uri)
 
 ## 16. 简历声明边界
 
-只有经过自动化验证的能力才能进入简历。第一版完成后可以描述为：
+只有经过自动化验证的能力才能进入简历。以下表述必须等待最终 revision 的单元、真实 PostgreSQL/Redis 集成、Compose E2E 与实际 GitHub Actions 证据全部完成后使用：
 
 > 设计并实现 Python 持续测试执行与质量门禁系统，使用 PostgreSQL 与 Redis/Celery构建异步任务链路，通过幂等键、Transactional Outbox、Run/Attempt 状态模型和租约识别处理重复提交与 Worker 失联；统一解析 pytest 与 Locust 结果，归档日志与测试产物，并将功能通过率、错误率和 P95 阈值转化为 CI 质量门禁。
 

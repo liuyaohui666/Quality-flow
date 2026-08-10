@@ -1,0 +1,244 @@
+name: QualityFlow validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-flow-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      QUALITY_FLOW_CI_SECRET_CANARY: qf-ci-${{ github.run_id }}-${{ github.run_attempt }}-quality
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install development dependencies
+        run: |
+          mkdir -p .ci-evidence/quality
+          python -m pip install ".[dev]"
+          python -m pip check 2>&1 | tee .ci-evidence/quality/pip-check.log
+
+      - name: Run Ruff
+        run: python -m ruff check . 2>&1 | tee .ci-evidence/quality/ruff.log
+
+      - name: Run unit tests
+        run: |
+          python -m pytest tests/unit -q \
+            --junitxml=.ci-evidence/quality/unit.xml \
+            2>&1 | tee .ci-evidence/quality/unit.log
+
+      - name: Prove POSIX process-tree cleanup
+        run: |
+          python -m pytest \
+            tests/unit/test_subprocess_runner.py::test_posix_timeout_reaps_a_spawned_child_process \
+            -q --junitxml=.ci-evidence/quality/posix-process.xml \
+            2>&1 | tee .ci-evidence/quality/posix-process.log
+
+      - name: Audit retained evidence
+        id: audit
+        if: always()
+        run: python scripts/audit_ci_evidence.py .ci-evidence/quality
+
+      - name: Upload retained evidence
+        if: always() && steps.audit.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-flow-${{ github.run_id }}-${{ github.run_attempt }}-quality
+          path: .ci-evidence/quality
+          if-no-files-found: warn
+          retention-days: 14
+
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      COMPOSE_PROJECT: quality-flow-int-${{ github.run_id }}-${{ github.run_attempt }}
+      QUALITY_FLOW_CI_SECRET_CANARY: qf-ci-${{ github.run_id }}-${{ github.run_attempt }}-integration
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Render scoped Compose contract
+        run: |
+          mkdir -p .ci-evidence/integration
+          docker compose -p "$COMPOSE_PROJECT" down -v --remove-orphans
+          docker compose -p "$COMPOSE_PROJECT" config --quiet
+          docker compose -p "$COMPOSE_PROJECT" config --services \
+            > .ci-evidence/integration/compose-services.txt
+          docker compose -p "$COMPOSE_PROJECT" config --images \
+            > .ci-evidence/integration/compose-images.txt
+
+      - name: Build clean application image
+        run: |
+          docker compose -p "$COMPOSE_PROJECT" build --pull --no-cache api \
+            2>&1 | tee .ci-evidence/integration/build.log
+
+      - name: Start isolated PostgreSQL and Redis
+        run: |
+          docker compose -p "$COMPOSE_PROJECT" up -d --wait --wait-timeout 120 \
+            postgres redis
+          docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps migrate
+
+      - name: Run PostgreSQL and Redis integration tests
+        run: |
+          docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps \
+            --user "$(id -u):$(id -g)" \
+            -e DATABASE_URL=postgresql+psycopg://quality_flow:quality_flow@postgres:5432/quality_flow \
+            -e TASK7_REDIS_URL=redis://redis:6379/14 \
+            -e QUALITY_FLOW_TEST_ADMIN_DATABASE_URL=postgresql+psycopg://quality_flow:quality_flow@postgres:5432/postgres \
+            -v "$GITHUB_WORKSPACE/tests:/app/tests:ro" \
+            -v "$GITHUB_WORKSPACE/.ci-evidence/integration:/evidence" \
+            api python -m pytest tests/integration -q -p no:cacheprovider \
+            --junitxml=/evidence/junit.xml \
+            2>&1 | tee .ci-evidence/integration/integration.log
+
+      - name: Collect scoped diagnostics
+        if: always()
+        run: |
+          docker compose -p "$COMPOSE_PROJECT" ps --all 2>&1 \
+            | tee .ci-evidence/integration/compose-ps.txt || true
+          docker compose -p "$COMPOSE_PROJECT" logs --no-color postgres redis 2>&1 \
+            | tee .ci-evidence/integration/compose.log || true
+
+      - name: Audit retained evidence
+        id: audit
+        if: always()
+        run: python scripts/audit_ci_evidence.py .ci-evidence/integration
+
+      - name: Upload retained evidence
+        if: always() && steps.audit.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-flow-${{ github.run_id }}-${{ github.run_attempt }}-integration
+          path: .ci-evidence/integration
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Remove scoped Compose resources
+        if: always()
+        run: docker compose -p "$COMPOSE_PROJECT" down -v --remove-orphans
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      COMPOSE_PROJECT: quality-flow-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+      QUALITY_FLOW_CI_SECRET_CANARY: qf-ci-${{ github.run_id }}-${{ github.run_attempt }}-e2e
+      QUALITY_FLOW_API_URL: http://127.0.0.1:18000
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install black-box test dependencies
+        run: |
+          mkdir -p .ci-evidence/e2e
+          python -m pip install ".[dev]"
+
+      - name: Render scoped Compose contract
+        run: |
+          docker compose -p "$COMPOSE_PROJECT" down -v --remove-orphans
+          docker compose -p "$COMPOSE_PROJECT" config --quiet
+          docker compose -p "$COMPOSE_PROJECT" config --services \
+            > .ci-evidence/e2e/compose-services.txt
+          docker compose -p "$COMPOSE_PROJECT" config --images \
+            > .ci-evidence/e2e/compose-images.txt
+
+      - name: Build and start clean full stack
+        run: |
+          docker compose -p "$COMPOSE_PROJECT" build --pull --no-cache api \
+            2>&1 | tee .ci-evidence/e2e/build.log
+          docker compose -p "$COMPOSE_PROJECT" up -d --wait --wait-timeout 180
+          migrate_id="$(docker compose -p "$COMPOSE_PROJECT" ps -aq migrate)"
+          test -n "$migrate_id"
+          test "$(docker inspect -f '{{.State.Status}}:{{.State.ExitCode}}' "$migrate_id")" = "exited:0"
+
+      - name: Verify public health endpoints
+        run: |
+          curl --fail --show-error --retry 20 --retry-all-errors \
+            "$QUALITY_FLOW_API_URL/health/live"
+          curl --fail --show-error --retry 20 --retry-all-errors \
+            "$QUALITY_FLOW_API_URL/health/ready"
+
+      - name: Run black-box E2E
+        run: |
+          python -m pytest tests/e2e -q \
+            --junitxml=.ci-evidence/e2e/junit.xml \
+            2>&1 | tee .ci-evidence/e2e/e2e.log
+
+      - name: Verify CI gate pass and expected quality failure
+        run: |
+          python scripts/ci_gate.py \
+            --api-url "$QUALITY_FLOW_API_URL" \
+            --suite-id demo-api --scenario ok \
+            --poll-interval 0.25 --timeout 90
+          set +e
+          python scripts/ci_gate.py \
+            --api-url "$QUALITY_FLOW_API_URL" \
+            --suite-id demo-api --scenario error \
+            --poll-interval 0.25 --timeout 90
+          expected_failure_rc=$?
+          set -e
+          test "$expected_failure_rc" -eq 1
+          printf 'pass=0\nexpected_quality_failure=%s\n' "$expected_failure_rc" \
+            > .ci-evidence/e2e/ci-gate-exit-codes.txt
+
+      - name: Collect scoped diagnostics
+        if: always()
+        run: |
+          docker compose -p "$COMPOSE_PROJECT" ps --all 2>&1 \
+            | tee .ci-evidence/e2e/compose-ps.txt || true
+          docker compose -p "$COMPOSE_PROJECT" logs --no-color 2>&1 \
+            | tee .ci-evidence/e2e/compose.log || true
+
+      - name: Audit retained evidence
+        id: audit
+        if: always()
+        run: python scripts/audit_ci_evidence.py .ci-evidence/e2e
+
+      - name: Upload retained evidence
+        if: always() && steps.audit.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-flow-${{ github.run_id }}-${{ github.run_attempt }}-e2e
+          path: .ci-evidence/e2e
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Remove scoped Compose resources
+        if: always()
+        run: docker compose -p "$COMPOSE_PROJECT" down -v --remove-orphans

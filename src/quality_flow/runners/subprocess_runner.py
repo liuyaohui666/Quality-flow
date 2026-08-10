@@ -13,7 +13,6 @@ import re
 import signal
 import stat
 import subprocess
-import sys
 import tempfile
 import threading
 import time
