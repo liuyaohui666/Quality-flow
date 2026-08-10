@@ -156,6 +156,21 @@ def test_image_source_is_root_owned_while_runtime_paths_are_service_owned() -> N
     )
 
 
+def test_worker_attempt_scratch_space_is_bounded_ephemeral_tmpfs() -> None:
+    worker = _compose()["services"]["worker"]
+    tmpfs_by_target = {
+        entry.split(":", 1)[0]: entry.split(":", 1)[1]
+        for entry in worker["tmpfs"]
+    }
+
+    assert set(tmpfs_by_target) == {"/runtime/workspaces", "/runtime/staging"}
+    for options in tmpfs_by_target.values():
+        option_set = set(options.split(","))
+        assert {"rw", "nosuid", "nodev", "noexec"} <= option_set
+        assert {"uid=10001", "gid=10001", "mode=0700"} <= option_set
+        assert any(option.startswith("size=") for option in option_set)
+
+
 def test_long_running_roles_have_bounded_behavior_aware_healthchecks() -> None:
     services = _compose()["services"]
 

@@ -15,7 +15,7 @@
 | Artifact 隔离 | staging 验证、`FileArtifactStore`、Attempt namespace | `python -m pytest tests/unit/test_artifacts.py -q`；`python -m pytest tests/e2e/test_quality_flow.py::test_artifacts_are_owned_by_distinct_attempts -q` | 不同 Artifact/Attempt ID、SHA-256、大小/MIME、API 无路径 | 本地 named volume；无下载/删除/GC |
 | 注册套件信任边界 | Registry、参数白名单、固定 argv、`shell=False` | `python -m pytest tests/unit/test_suite_registry.py tests/unit/test_subprocess_runner.py -q` | 非法参数/路径/保留参数被拒 | 只隔离可信套件；不是恶意代码安全沙箱 |
 | API 最小暴露面 | Pydantic response allowlist | `python -m pytest tests/unit/test_api_runs.py -q` | Run/event/Artifact 响应无 URI/path/任意 payload | 不提供 Artifact 文件下载接口 |
-| Compose 隔离拓扑 | Dockerfile allowlist、8 服务、非 root、health gates | `python -m pytest tests/unit/test_compose_contract.py tests/unit/test_healthcheck.py -q`；`docker compose -p quality-flow-check config --quiet` | 服务/卷/端口/health 契约与容器审计 | 单主机；镜像未按 digest 锁定 |
+| Compose 隔离拓扑 | Dockerfile allowlist、8 服务、非 root、health gates、限额 tmpfs scratch | `python -m pytest tests/unit/test_compose_contract.py tests/unit/test_healthcheck.py -q`；`docker compose -p quality-flow-check config --quiet` | 服务/卷/端口/health 契约；同容器重启后 workspace/staging 为空 | 单主机；镜像未按 digest 锁定 |
 | CI 退出码 | `scripts/ci_gate.py` | live stack 上分别执行 `demo-api / ok` 与 `demo-api / error` | `pass=0`、`expected_quality_failure=1` | 非零类别不能全部等同为质量失败 |
 | 五场景闭环 | Demo Target、pytest/Locust Runner、API E2E | `$env:QUALITY_FLOW_API_URL='http://127.0.0.1:18000'; python -m pytest tests/e2e -q` | 五组终态、events、case/metrics、gate、Artifact 元数据 | 只验证确定性本地靶场 |
 | CI 诊断保留安全 | evidence allowlist + `audit_ci_evidence.py` | `python -m pytest tests/unit/test_ci_evidence_audit.py -q` | safe bundle 通过；secret URL/header/canary/link 被拒且不回显 | 规则扫描不是通用秘密检测平台 |

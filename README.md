@@ -179,6 +179,7 @@ docker compose -p quality-flow-demo logs --no-color
 - 只接受 Registry 中的可信套件、固定 argv 和白名单参数；不接受任意命令。
 - 子进程使用参数数组和 `shell=False`，继承最小环境，限制输出与总执行时间。
 - `/app` 为 root 所有且对运行 UID 只读；每个 Attempt 复制到独立可写工作区，结束后清理。
+- Worker 的 workspace/staging 使用带容量上限的临时内存文件系统；容器被强制终止后，同一容器再次启动也不会保留上次执行的 scratch 文件。
 - 工作区、Runner staging、Artifact named volume 相互分离；Artifact 路径由平台生成。
 - API 不返回内部 Artifact URI、磁盘路径或任意 event payload。
 - Compose 中的 `quality_flow` 是公开的本地演示默认值，不是真实秘密；真实秘密不得提交、打印或上传。

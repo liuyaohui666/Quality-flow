@@ -91,7 +91,7 @@ Registry 只允许固定 `suite_id`、runner 类型、argv 模板、参数取值
 
 子进程获得最小环境；stdout/stderr 并发排空且有大小上限；heartbeat 受控；整体使用硬超时。POSIX 使用进程组、Windows 使用 Job Object 处理后代进程。结果文件先复制到 Runner 管理的 staging，再解析，避免套件在解析前替换链接或文件。
 
-`/app` 在镜像中为 root 所有且对 UID 10001 只读；Attempt workspace、staging 和 Artifact root 相互分离。执行结束后临时 workspace/staging 清理。
+`/app` 在镜像中为 root 所有且对 UID 10001 只读；Attempt workspace、staging 和 Artifact root 相互分离。Worker 的 workspace/staging 是分别限额的 tmpfs，正常执行由 `finally` 清理，容器遭强制终止后则由 tmpfs 的重启语义清空；需要保留的 Artifact 单独写入 named volume。
 
 这些措施隔离可信套件的正常副作用，**不是恶意代码安全沙箱**：同一容器内的恶意代码仍可能访问进程可见的网络和资源。
 

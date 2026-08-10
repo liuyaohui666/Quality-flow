@@ -128,6 +128,9 @@ services:
       - --queues=quality-flow
       - --concurrency=1
       - --hostname=worker@%h
+    tmpfs:
+      - /runtime/workspaces:rw,nosuid,nodev,noexec,uid=10001,gid=10001,mode=0700,size=128m
+      - /runtime/staging:rw,nosuid,nodev,noexec,uid=10001,gid=10001,mode=0700,size=64m
     volumes:
       - quality-flow-artifacts:/runtime/artifacts
     depends_on:
