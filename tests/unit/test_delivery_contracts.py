@@ -67,6 +67,12 @@ def test_workflow_uses_read_only_sha_pinned_bounded_jobs() -> None:
     assert all(re.search(r"@[0-9a-f]{40}$", action) for action in used_actions)
 
 
+def test_workflow_propagates_failures_through_tee_pipelines() -> None:
+    workflow = _workflow()
+
+    assert workflow["defaults"]["run"]["shell"] == "bash"
+
+
 def test_workflow_runs_static_integration_and_full_e2e_gates() -> None:
     jobs = _workflow()["jobs"]
     quality = _run_commands(jobs["quality"])

@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import subprocess
 
 import pytest
@@ -65,14 +66,17 @@ def test_settings_rejects_symlinked_config_outside_project_root(
     outside_root = tmp_path / "outside"
     outside_root.mkdir()
     config_link = project_root / "config"
-    junction = subprocess.run(
-        ["cmd", "/d", "/c", "mklink", "/J", str(config_link), str(outside_root)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if junction.returncode:
-        pytest.skip(f"Could not create test junction: {junction.stderr}")
+    if os.name == "nt":
+        junction = subprocess.run(
+            ["cmd", "/d", "/c", "mklink", "/J", str(config_link), str(outside_root)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if junction.returncode:
+            pytest.skip(f"Could not create test junction: {junction.stderr}")
+    else:
+        config_link.symlink_to(outside_root, target_is_directory=True)
     monkeypatch.setenv("QUALITY_FLOW_SUITES_CONFIG", "config/suites.yaml")
 
     with pytest.raises(ValueError, match="project-relative"):

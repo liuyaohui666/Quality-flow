@@ -30,10 +30,15 @@ def test_safe_allowlisted_evidence_passes(tmp_path: Path) -> None:
         ("broker.log", "redis://user:should-not-be-retained@redis:6379/0"),
         ("canary.json", '{"value":"ci-secret-canary"}'),
     ],
+    ids=("authorization-header", "set-cookie-header", "credential-url", "ci-canary"),
 )
 def test_secret_bearing_text_is_rejected_without_echoing_value(
-    tmp_path: Path, filename: str, content: str
+    tmp_path: Path,
+    filename: str,
+    content: str,
+    request: pytest.FixtureRequest,
 ) -> None:
+    assert content not in request.node.name
     (tmp_path / filename).write_text(content, encoding="utf-8")
 
     with pytest.raises(EvidenceAuditError) as captured:
