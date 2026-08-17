@@ -28,3 +28,11 @@ def test_resolve_environment_variables_uses_default_for_empty_value(monkeypatch)
     resolved = resolve_environment_variables("${BOOKER_USER:-admin}")
 
     assert resolved == "admin"
+
+
+def test_standalone_pytest_configuration_enables_strict_markers() -> None:
+    pytest_ini = (Path(__file__).parents[1] / "pytest.ini").read_text(encoding="utf-8")
+
+    assert "--strict-markers" in pytest_ini
+    assert "api: tests that call the public Restful Booker service" in pytest_ini
+    assert "smoke: core end-to-end API regression tests" in pytest_ini

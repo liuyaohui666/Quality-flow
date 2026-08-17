@@ -11,6 +11,7 @@ from utils.logger import get_logger
 
 
 _SENSITIVE_KEYS = frozenset({"password", "token", "authorization", "cookie", "set-cookie"})
+_UNLOGGABLE_RESPONSE_BODY = "<response body omitted: not valid JSON>"
 
 
 class BookingClient:
@@ -98,7 +99,7 @@ def _response_body(response: Any) -> Any:
     try:
         return response.json()
     except (TypeError, ValueError):
-        return response.text
+        return _UNLOGGABLE_RESPONSE_BODY
 
 
 def _to_log_json(payload: Any) -> str:
