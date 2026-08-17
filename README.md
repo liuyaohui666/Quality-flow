@@ -4,7 +4,7 @@ QualityFlow 是一个面向**预注册可信测试套件**的学生规模持续�
 
 V1 使用 Python 3.12、FastAPI、PostgreSQL、Redis/Celery、pytest、Locust 和 Docker Compose。项目参考公开的软件工程实践设计，但不声称达到任何公司的生产规模或内部标准。
 
-> 当前状态：本地已经验证单元测试、真实 PostgreSQL/Redis 集成测试、最终镜像无缓存构建和空卷 Compose E2E。GitHub 托管 Ubuntu Runner 已完成 `quality`、`integration` 和 `e2e` 三个 Job 的真实绿色验证；具体证据见 [GitHub Actions run #2](https://github.com/liuyaohui666/Quality-flow/actions/runs/32006807495)。
+> 当前状态：本地已经验证单元测试、真实 PostgreSQL/Redis 集成测试、最终镜像无缓存构建和空卷 Compose E2E。GitHub 托管 Ubuntu Runner 已完成 `quality`、`integration` 和 `e2e` 三个 Job 的真实绿色验证；包含 Restful Booker 接入代码的证据见 [GitHub Actions run #4](https://github.com/liuyaohui666/Quality-flow/actions/runs/32014084498)。
 
 ## 解决什么问题
 
@@ -116,6 +116,8 @@ Invoke-RestMethod "http://127.0.0.1:18000/api/v1/runs/$($run.run_id)/artifacts"
 
 QualityFlow 保存 JUnit/stdout/stderr 作为该 Run 的平台证据；QualityFlow 不归档 Allure，独立原项目保留 Allure。
 
+2026-08-17 对提交 `c06dfc7` 做了单独的点验：公网直跑 7/7；QualityFlow 管理的 Run `1718949a-56a5-40f6-b254-2b860b4ebf55` 为 `completed/passed`、7/7，functional gate 通过，并保留 `junit_xml`、`stdout`、`stderr` 三类 Artifact。该记录只是当时的公网可用性证据，不把外部服务变成必跑 CI 依赖。
+
 ## CI 质量门禁客户端
 
 宿主机运行客户端需要 Python 3.12 及项目依赖：
@@ -157,7 +159,7 @@ docker compose -p quality-flow-demo config --quiet
 
 工作流使用只读仓库权限、固定 SHA 的官方 Actions、有限 Job 超时和命名 Compose 项目。失败时先收集限定的状态/日志/JUnit，再由 `scripts/audit_ci_evidence.py` 检查扩展名、大小、符号链接、凭据式 URL、认证头和 canary；只有审计通过才保留 14 天。清理只作用于当前 Job 的命名项目，不使用系统级 prune。
 
-提交 `63d012f` 的 [GitHub Actions run #2](https://github.com/liuyaohui666/Quality-flow/actions/runs/32006807495) 已在托管 Ubuntu Runner 上完整通过三个 Job，并生成三份经过安全审计的 evidence artifact。该证据只覆盖此仓库当前的学生规模与单机 Compose 边界，不代表生产集群、高可用或灾备能力。
+提交 `c06dfc7` 的 [GitHub Actions run #4](https://github.com/liuyaohui666/Quality-flow/actions/runs/32014084498) 已在托管 Ubuntu Runner 上完整通过三个 Job，并生成三份经过安全审计的 evidence artifact。该证据只覆盖此仓库当前的学生规模与单机 Compose 边界，不代表生产集群、高可用或灾备能力。
 
 ## 失败定位路径
 

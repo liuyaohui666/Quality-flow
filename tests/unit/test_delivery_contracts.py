@@ -278,5 +278,21 @@ def test_external_restful_booker_usage_documents_the_live_boundary() -> None:
     assert "JUnit/stdout/stderr" in combined
     assert "QualityFlow 不归档 Allure" in combined
     assert "独立原项目保留 Allure" in combined
+    assert "1718949a-56a5-40f6-b254-2b860b4ebf55" in readme
+    assert "公网直跑 7/7" in readme
+
+
+def test_hosted_ci_evidence_covers_the_restful_booker_integration_commit() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    matrix = (PROJECT_ROOT / "docs" / "evidence-matrix.md").read_text(
+        encoding="utf-8"
+    )
+    combined = "\n".join((readme, matrix))
+
+    assert "c06dfc7" in combined
+    assert "run #4" in combined
+    assert "32014084498" in combined
+    assert "run #2" not in combined
+    assert "32006807495" not in combined
     assert "QualityFlow 归档 Allure" not in combined
     assert "QualityFlow 保存 Allure" not in combined

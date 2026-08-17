@@ -1,6 +1,6 @@
 # QualityFlow V1 证据矩阵
 
-表中命令必须在所述依赖已准备的隔离环境运行。`GitHub Actions` 行的远程执行证据来自提交 `63d012f` 的 [run #2](https://github.com/liuyaohui666/Quality-flow/actions/runs/32006807495)，证据只适用于该提交及表中声明的学生规模边界。
+表中命令必须在所述依赖已准备的隔离环境运行。`GitHub Actions` 行的远程执行证据来自提交 `c06dfc7` 的 [run #4](https://github.com/liuyaohui666/Quality-flow/actions/runs/32014084498)，证据只适用于该提交及表中声明的学生规模边界。
 
 | Claim | Implementation | Verification command | Evidence artifact | Limitation |
 | --- | --- | --- | --- | --- |
@@ -19,5 +19,5 @@
 | CI 退出码 | `scripts/ci_gate.py` | live stack 上分别执行 `demo-api / ok` 与 `demo-api / error` | `pass=0`、`expected_quality_failure=1` | 非零类别不能全部等同为质量失败 |
 | 五场景闭环 | Demo Target、pytest/Locust Runner、API E2E | `$env:QUALITY_FLOW_API_URL='http://127.0.0.1:18000'; python -m pytest tests/e2e -q` | 五组终态、events、case/metrics、gate、Artifact 元数据 | 只验证确定性本地靶场 |
 | CI 诊断保留安全 | evidence allowlist + `audit_ci_evidence.py` | `python -m pytest tests/unit/test_ci_evidence_audit.py -q` | safe bundle 通过；secret URL/header/canary/link 被拒且不回显 | 规则扫描不是通用秘密检测平台 |
-| GitHub CI | SHA-pinned workflow：quality/integration/e2e | `python -m pytest tests/unit/test_delivery_contracts.py -q`；检查 [GitHub Actions run #2](https://github.com/liuyaohui666/Quality-flow/actions/runs/32006807495) | 三个 Job 全绿；三份经审计的 JUnit/Compose 日志 evidence artifact | 单次托管 Runner 证据不等于生产持续稳定性 |
-| 可选公开 Restful Booker 套件 | `restful-booker-api`，固定 `parameters: {}` | 手工提交 `{"suite_id":"restful-booker-api","parameters":{}}` 后查询 Run | QualityFlow 保存 JUnit/stdout/stderr；QualityFlow 不归档 Allure，独立原项目保留 Allure | 公开外部服务、被测后端不在本仓库，不进入必跑 CI；执行结果与可用性需现场确认 |
+| GitHub CI | SHA-pinned workflow：quality/integration/e2e | `python -m pytest tests/unit/test_delivery_contracts.py -q`；检查 [GitHub Actions run #4](https://github.com/liuyaohui666/Quality-flow/actions/runs/32014084498) | 三个 Job 全绿；三份经审计的 JUnit/Compose 日志 evidence artifact | 单次托管 Runner 证据不等于生产持续稳定性 |
+| 可选公开 Restful Booker 套件 | `restful-booker-api`，固定 `parameters: {}` | 手工提交 `{"suite_id":"restful-booker-api","parameters":{}}` 后查询 Run | 2026-08-17 点验：公网直跑 7/7，平台 Run 7/7、gate 通过、JUnit/stdout/stderr；QualityFlow 不归档 Allure | 公开外部服务、被测后端不在本仓库，不进入必跑 CI；点验不保证未来可用性 |
