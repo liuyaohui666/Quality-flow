@@ -2,7 +2,8 @@ import io
 import logging
 from uuid import uuid4
 
-from clients.booking_client import BookingClient, _redact_payload
+from clients.booking_client import BookingClient
+from utils.sanitization import redact_payload
 
 
 class FakeResponse:
@@ -89,7 +90,7 @@ def test_redact_payload_recursively_hides_sensitive_values_without_mutating_inpu
         },
     }
 
-    redacted = _redact_payload(payload)
+    redacted = redact_payload(payload)
 
     assert redacted == {
         "username": "admin",

@@ -14,6 +14,12 @@ ALLOWED_ACTIONS = {
     "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
     "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
 }
+REQUIRED_CI_JOBS = ("quality", "integration", "e2e")
+EXTERNAL_RESTFUL_BOOKER_REFERENCES = (
+    "restful-booker-api",
+    "restful-booker.herokuapp.com",
+    "test_booking_crud.py",
+)
 
 
 def _workflow() -> dict:
@@ -37,15 +43,34 @@ def test_python_and_ruff_policy_match_the_delivery_runtime() -> None:
     assert project["tool"]["ruff"]["lint"]["select"] == ["E4", "E7", "E9", "F"]
 
 
-def test_restful_booker_delivery_dependency_and_e2e_boundary() -> None:
+def test_restful_booker_delivery_dependency_and_required_ci_boundary() -> None:
     project = tomllib.loads(
         (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
-    e2e_commands = _run_commands(_workflow()["jobs"]["e2e"])
+    jobs = _workflow()["jobs"]
 
     assert "requests>=2.31,<3" in project["project"]["dependencies"]
-    assert "restful-booker-api" not in e2e_commands
-    assert "restful-booker.herokuapp.com" not in e2e_commands
+    for job_name in REQUIRED_CI_JOBS:
+        commands = _run_commands(jobs[job_name])
+        for forbidden_reference in EXTERNAL_RESTFUL_BOOKER_REFERENCES:
+            assert forbidden_reference not in commands.casefold(), (
+                f"{job_name} must not reference {forbidden_reference}"
+            )
+
+
+def test_restful_booker_unit_runner_is_locked_to_offline_test_targets() -> None:
+    runner_contract = (
+        PROJECT_ROOT / "tests" / "unit" / "test_restful_booker_suite.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"tests/test_booking_crud.py"' not in runner_contract
+    for offline_target in (
+        "test_booking_client.py",
+        "test_assertions.py",
+        "test_config.py",
+        "test_logger.py",
+    ):
+        assert f'"tests/{offline_target}"' in runner_contract
 
 
 def test_generated_ci_evidence_is_not_committable() -> None:

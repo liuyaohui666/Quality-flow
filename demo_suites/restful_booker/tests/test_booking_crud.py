@@ -60,9 +60,13 @@ def test_partial_update_changes_only_requested_field(
 
 @pytest.mark.api
 def test_delete_booking_makes_resource_unavailable(
-    created_booking: tuple[int, dict], booking_client: BookingClient, auth_token: str
+    booking_client: BookingClient, booking_data: dict, auth_token: str
 ) -> None:
-    booking_id, _ = created_booking
+    create_response = booking_client.create_booking(
+        deepcopy(booking_data["valid_booking"])
+    )
+    assert_status_code(create_response, 200)
+    booking_id = create_response.json()["bookingid"]
 
     delete_response = booking_client.delete_booking(booking_id, auth_token)
     get_response = booking_client.get_booking(booking_id)

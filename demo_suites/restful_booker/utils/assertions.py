@@ -2,12 +2,14 @@
 
 from typing import Any
 
+from utils.sanitization import sanitized_response_body
+
 
 def assert_status_code(response: Any, expected_status: int) -> None:
     """Assert an HTTP status and include body evidence when it differs."""
     assert response.status_code == expected_status, (
         f"Expected status {expected_status}, got {response.status_code}. "
-        f"Response body: {response.text}"
+        f"Response body: {sanitized_response_body(response)}"
     )
 
 
