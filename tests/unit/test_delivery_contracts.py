@@ -253,3 +253,5 @@ def test_external_restful_booker_usage_documents_the_live_boundary() -> None:
     assert "JUnit/stdout/stderr" in combined
     assert "QualityFlow 不归档 Allure" in combined
     assert "独立原项目保留 Allure" in combined
+    assert "QualityFlow 归档 Allure" not in combined
+    assert "QualityFlow 保存 Allure" not in combined
