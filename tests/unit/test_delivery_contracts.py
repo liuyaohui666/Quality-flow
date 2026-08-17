@@ -230,3 +230,26 @@ def test_migration_roundtrip_uses_a_configurable_admin_database_url() -> None:
 
     assert "QUALITY_FLOW_TEST_ADMIN_DATABASE_URL" in function
     assert "127.0.0.1:55432" not in function
+
+
+def test_external_restful_booker_usage_documents_the_live_boundary() -> None:
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    architecture = (PROJECT_ROOT / "docs" / "architecture.md").read_text(
+        encoding="utf-8"
+    )
+    matrix = (PROJECT_ROOT / "docs" / "evidence-matrix.md").read_text(
+        encoding="utf-8"
+    )
+    combined = "\n".join((readme, architecture, matrix))
+
+    assert "restful-booker-api" in combined
+    assert '"suite_id": "restful-booker-api"' in readme
+    assert '"parameters": {}' in readme
+    assert "parameters: {}" in combined
+    assert "公开外部服务" in combined
+    assert "公开 Restful Booker 部署" in readme
+    assert "被测后端不在本仓库" in architecture
+    assert "不进入必跑 CI" in combined
+    assert "JUnit/stdout/stderr" in combined
+    assert "QualityFlow 不归档 Allure" in combined
+    assert "独立原项目保留 Allure" in combined

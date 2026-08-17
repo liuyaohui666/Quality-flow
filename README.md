@@ -101,6 +101,21 @@ Invoke-RestMethod "http://127.0.0.1:18000/api/v1/runs/$($run.run_id)/artifacts"
 
 `POST` 返回 `202` 表示已持久化并排队，不表示测试已经通过。公开状态和结果使用小写值。
 
+## 可选：手工触发公开 Restful Booker
+
+已注册的 `restful-booker-api` 套件使用以下请求体：
+
+```json
+{
+  "suite_id": "restful-booker-api",
+  "parameters": {}
+}
+```
+
+其中 `parameters: {}` 表示该套件不接受额外参数。产生的 Run 测试公开 Restful Booker 部署；它是公开外部服务，且被测后端不在本仓库。公开服务的可用性和本次执行结果应在触发时单独确认，因此该套件不进入必跑 CI。
+
+QualityFlow 保存 JUnit/stdout/stderr 作为该 Run 的平台证据；QualityFlow 不归档 Allure，独立原项目保留 Allure。
+
 ## CI 质量门禁客户端
 
 宿主机运行客户端需要 Python 3.12 及项目依赖：

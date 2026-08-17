@@ -20,3 +20,4 @@
 | 五场景闭环 | Demo Target、pytest/Locust Runner、API E2E | `$env:QUALITY_FLOW_API_URL='http://127.0.0.1:18000'; python -m pytest tests/e2e -q` | 五组终态、events、case/metrics、gate、Artifact 元数据 | 只验证确定性本地靶场 |
 | CI 诊断保留安全 | evidence allowlist + `audit_ci_evidence.py` | `python -m pytest tests/unit/test_ci_evidence_audit.py -q` | safe bundle 通过；secret URL/header/canary/link 被拒且不回显 | 规则扫描不是通用秘密检测平台 |
 | GitHub CI | SHA-pinned workflow：quality/integration/e2e | `python -m pytest tests/unit/test_delivery_contracts.py -q`；检查 [GitHub Actions run #2](https://github.com/liuyaohui666/Quality-flow/actions/runs/32006807495) | 三个 Job 全绿；三份经审计的 JUnit/Compose 日志 evidence artifact | 单次托管 Runner 证据不等于生产持续稳定性 |
+| 可选公开 Restful Booker 套件 | `restful-booker-api`，固定 `parameters: {}` | 手工提交 `{"suite_id":"restful-booker-api","parameters":{}}` 后查询 Run | QualityFlow 保存 JUnit/stdout/stderr；QualityFlow 不归档 Allure，独立原项目保留 Allure | 公开外部服务、被测后端不在本仓库，不进入必跑 CI；执行结果与可用性需现场确认 |
