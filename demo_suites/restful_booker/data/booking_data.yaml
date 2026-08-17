@@ -1,0 +1,19 @@
+valid_booking:
+  firstname: Ada
+  lastname: Lovelace
+  totalprice: 188
+  depositpaid: true
+  bookingdates:
+    checkin: '2027-10-01'
+    checkout: '2027-10-05'
+  additionalneeds: Breakfast
+
+full_update_booking:
+  firstname: Grace
+  lastname: Hopper
+  totalprice: 288
+  depositpaid: false
+  bookingdates:
+    checkin: '2027-11-01'
+    checkout: '2027-11-08'
+  additionalneeds: Late checkout

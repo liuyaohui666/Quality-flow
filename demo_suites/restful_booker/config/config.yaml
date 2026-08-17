@@ -1,0 +1,5 @@
+base_url: https://restful-booker.herokuapp.com
+request_timeout: 15
+auth:
+  username: admin
+  password: password123
