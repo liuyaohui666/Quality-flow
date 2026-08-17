@@ -4,7 +4,7 @@ QualityFlow 是一个面向**预注册可信测试套件**的学生规模持续�
 
 V1 使用 Python 3.12、FastAPI、PostgreSQL、Redis/Celery、pytest、Locust 和 Docker Compose。项目参考公开的软件工程实践设计，但不声称达到任何公司的生产规模或内部标准。
 
-> 当前状态：本地已经验证单元测试、真实 PostgreSQL/Redis 集成测试、最终镜像无缓存构建和空卷 Compose E2E。GitHub Actions 工作流已配置并接受本地静态契约检查，**尚未在 GitHub 托管 Runner 上验证**；推送前不能把它描述成“CI 已绿色运行”。
+> 当前状态：本地已经验证单元测试、真实 PostgreSQL/Redis 集成测试、最终镜像无缓存构建和空卷 Compose E2E。GitHub 托管 Ubuntu Runner 已完成 `quality`、`integration` 和 `e2e` 三个 Job 的真实绿色验证；具体证据见 [GitHub Actions run #2](https://github.com/liuyaohui666/Quality-flow/actions/runs/32006807495)。
 
 ## 解决什么问题
 
@@ -142,7 +142,7 @@ docker compose -p quality-flow-demo config --quiet
 
 工作流使用只读仓库权限、固定 SHA 的官方 Actions、有限 Job 超时和命名 Compose 项目。失败时先收集限定的状态/日志/JUnit，再由 `scripts/audit_ci_evidence.py` 检查扩展名、大小、符号链接、凭据式 URL、认证头和 canary；只有审计通过才保留 14 天。清理只作用于当前 Job 的命名项目，不使用系统级 prune。
 
-这只是已实现并通过本地静态契约校验的配置；首次 push 后仍需查看真实 Actions 结果，才能声称 GitHub 托管 Linux CI 已通过。
+提交 `63d012f` 的 [GitHub Actions run #2](https://github.com/liuyaohui666/Quality-flow/actions/runs/32006807495) 已在托管 Ubuntu Runner 上完整通过三个 Job，并生成三份经过安全审计的 evidence artifact。该证据只覆盖此仓库当前的学生规模与单机 Compose 边界，不代表生产集群、高可用或灾备能力。
 
 ## 失败定位路径
 

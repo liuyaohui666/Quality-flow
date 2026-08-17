@@ -148,7 +148,7 @@ V1 使用 Compose/进程文本日志，不声称统一 JSON 结构化日志。Ru
 - Locust 仅单用户、本地确定性靶场；无多节点压测。
 - Artifact 仅本地 named volume；无下载、删除、对象存储和 GC。
 - Python 依赖有版本范围，容器标签未按 digest 锁定；不是 bit-for-bit reproducible。
-- 已配置 GitHub Actions，但 push 前没有托管 Runner 成功证据。
+- GitHub Actions 已在托管 Ubuntu Runner 上完成 quality/integration/e2e 三 Job 绿色验证，但只覆盖当前提交和学生规模边界。
 - 无 Kubernetes 或生产部署证据。
 
 这些限制是刻意控制的学生项目范围，而不是隐藏的生产承诺。

@@ -159,7 +159,7 @@ def test_delivery_documents_keep_claims_and_commands_truthful() -> None:
     assert "可信套件" in combined
     assert "不是恶意代码安全沙箱" in combined
     assert "不提供 Artifact 文件下载接口" in combined
-    assert "尚未在 GitHub 托管 Runner 上验证" in readme
+    assert "GitHub 托管 Ubuntu Runner 已完成" in readme
     assert "认证/RBAC" in readme
     assert "自动重试/取消" in readme
     assert "高可用/灾备" in readme
