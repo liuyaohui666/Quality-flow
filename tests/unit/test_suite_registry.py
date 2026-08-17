@@ -58,6 +58,31 @@ def test_repository_registry_points_to_both_demo_runner_suites(
     }
 
 
+def test_repository_registry_registers_restful_booker_api(
+    registry: SuiteRegistry,
+) -> None:
+    suite = registry.get("restful-booker-api")
+
+    assert suite.runner_type == "pytest"
+    assert suite.working_directory == (
+        Path(__file__).resolve().parents[2] / "demo_suites" / "restful_booker"
+    ).resolve()
+    assert suite.argv == (
+        "python",
+        "-m",
+        "pytest",
+        "tests/test_booking_crud.py",
+        "-q",
+        "--strict-markers",
+    )
+    assert suite.timeout_seconds == 120
+    assert suite.resolve_parameters({}) == {}
+    with pytest.raises(InvalidSuiteParameter):
+        suite.resolve_parameters({"base_url": "https://example.test"})
+    assert suite.gate_policy.min_pass_rate == 1.0
+    assert suite.gate_policy.max_failures == 0
+
+
 def test_settings_rejects_symlinked_config_outside_project_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

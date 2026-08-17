@@ -43,3 +43,19 @@ suites:
       max_p95_ms: 250
       min_requests: 3
     source_revision: main
+  restful-booker-api:
+    runner_type: pytest
+    working_directory: demo_suites/restful_booker
+    argv:
+      - python
+      - -m
+      - pytest
+      - tests/test_booking_crud.py
+      - -q
+      - --strict-markers
+    timeout_seconds: 120
+    allowed_parameters: {}
+    gate_policy:
+      min_pass_rate: 1.0
+      max_failures: 0
+    source_revision: restful-booker@387568c

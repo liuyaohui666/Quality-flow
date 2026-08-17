@@ -37,6 +37,17 @@ def test_python_and_ruff_policy_match_the_delivery_runtime() -> None:
     assert project["tool"]["ruff"]["lint"]["select"] == ["E4", "E7", "E9", "F"]
 
 
+def test_restful_booker_delivery_dependency_and_e2e_boundary() -> None:
+    project = tomllib.loads(
+        (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    e2e_commands = _run_commands(_workflow()["jobs"]["e2e"])
+
+    assert "requests>=2.31,<3" in project["project"]["dependencies"]
+    assert "restful-booker-api" not in e2e_commands
+    assert "restful-booker.herokuapp.com" not in e2e_commands
+
+
 def test_generated_ci_evidence_is_not_committable() -> None:
     ignored = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
 
