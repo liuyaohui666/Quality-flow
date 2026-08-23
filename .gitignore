@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .ci-evidence/
 .venv/
+.worktrees/
 .env
 dist/
 build/
