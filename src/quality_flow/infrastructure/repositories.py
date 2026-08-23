@@ -6,7 +6,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, selectinload
 
 from quality_flow.domain.enums import AttemptStatus, RunOutcome, RunStatus
@@ -33,6 +34,8 @@ class LeaseLostError(RuntimeError):
 
 
 class RunRepository:
+    _TERMINAL_LOCK_TIMEOUT_MILLISECONDS = 1_000
+
     def __init__(self, session: Session) -> None:
         self._session = session
 
@@ -265,21 +268,41 @@ class RunRepository:
         on_run_locked: Callable[[], None] | None = None,
     ) -> tuple[Run, RunAttempt]:
         """Lock Run then Attempt and prove the caller still owns the live lease."""
-        run = self._session.scalar(
-            select(Run).where(Run.run_id == run_id).with_for_update()
+        self._session.execute(
+            text(
+                "SET LOCAL lock_timeout = "
+                f"'{self._TERMINAL_LOCK_TIMEOUT_MILLISECONDS}ms'"
+            )
         )
+        try:
+            run = self._session.scalar(
+                select(Run).where(Run.run_id == run_id).with_for_update()
+            )
+        except OperationalError as error:
+            if _is_postgres_lock_timeout(error):
+                raise LeaseLostError(
+                    "terminal database lock acquisition timed out"
+                ) from error
+            raise
         if run is None:
             raise LeaseLostError("run lease owner no longer exists")
         if on_run_locked is not None:
             on_run_locked()
-        attempt = self._session.scalar(
-            select(RunAttempt)
-            .where(
-                RunAttempt.run_id == run_id,
-                RunAttempt.attempt_id == attempt_id,
+        try:
+            attempt = self._session.scalar(
+                select(RunAttempt)
+                .where(
+                    RunAttempt.run_id == run_id,
+                    RunAttempt.attempt_id == attempt_id,
+                )
+                .with_for_update()
             )
-            .with_for_update()
-        )
+        except OperationalError as error:
+            if _is_postgres_lock_timeout(error):
+                raise LeaseLostError(
+                    "terminal database lock acquisition timed out"
+                ) from error
+            raise
         if (
             run.status is not RunStatus.RUNNING
             or attempt is None
@@ -290,6 +313,10 @@ class RunRepository:
         ):
             raise LeaseLostError("attempt lease is missing, expired, or no longer running")
         return run, attempt
+
+
+def _is_postgres_lock_timeout(error: OperationalError) -> bool:
+    return getattr(error.orig, "sqlstate", None) == "55P03"
 
 
 def _outcome_metrics(outcome: RunnerOutcome) -> tuple[tuple[str, float, str], ...]:

@@ -19,7 +19,7 @@ from psycopg import sql
 from redis import Redis
 from sqlalchemy import create_engine, delete, inspect, select, text, update
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from quality_flow.application.dispatcher import OutboxDispatcher
@@ -1016,6 +1016,107 @@ def test_terminal_run_lock_is_released_while_keeper_heartbeat_is_blocked(
         assert lock_error is None
         assert run.status is RunStatus.COMPLETED
         assert attempt.status is AttemptStatus.PASSED
+
+
+def test_terminal_attempt_lock_timeout_rolls_back_run_lock_before_holder_releases(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "terminal-attempt-lock-timeout",
+    )
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=claimed_at, lease_duration=timedelta(seconds=30)
+        )
+        attempt_id = run.attempts[-1].attempt_id
+        lease_token = run.attempts[-1].lease_token
+        uow.commit()
+
+    attempt_holder = session_factory()
+    terminal_done = Event()
+    run_locked = Event()
+    terminal_errors: list[BaseException] = []
+    probe_error = None
+    terminal_finished_while_attempt_locked = False
+    attempt_transaction_still_open = False
+    try:
+        attempt_holder.begin()
+        held = attempt_holder.execute(
+            update(RunAttempt)
+            .where(RunAttempt.attempt_id == attempt_id)
+            .values(heartbeat_at=RunAttempt.heartbeat_at)
+        )
+        assert held.rowcount == 1
+
+        terminal = RunnerOutcome(
+            attempt_status=AttemptStatus.PASSED,
+            exit_code=0,
+            started_at=claimed_at,
+            finished_at=claimed_at + timedelta(seconds=1),
+            gate_result=GateResult(True, (), {}),
+        )
+
+        def finalize() -> None:
+            try:
+                with SqlAlchemyUnitOfWork(session_factory) as uow:
+                    uow.runs.record_terminal_aggregate(
+                        run_id,
+                        attempt_id,
+                        lease_token,
+                        terminal,
+                        RunOutcome.PASSED,
+                        (),
+                        now=claimed_at + timedelta(seconds=2),
+                        on_run_locked=run_locked.set,
+                    )
+                    uow.commit()
+            except BaseException as error:
+                terminal_errors.append(error)
+            finally:
+                terminal_done.set()
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            final_write = executor.submit(finalize)
+            assert run_locked.wait(timeout=10)
+            terminal_finished_while_attempt_locked = terminal_done.wait(timeout=2)
+            attempt_transaction_still_open = attempt_holder.in_transaction()
+            try:
+                with session_factory.begin() as session:
+                    session.execute(text("SET LOCAL lock_timeout = '500ms'"))
+                    locked_run = session.scalar(
+                        select(Run).where(Run.run_id == run_id).with_for_update()
+                    )
+                    assert locked_run.run_id == run_id
+            except BaseException as error:
+                probe_error = error
+            finally:
+                attempt_holder.rollback()
+                final_write.result(timeout=10)
+    finally:
+        if attempt_holder.in_transaction():
+            attempt_holder.rollback()
+        attempt_holder.close()
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempt = session.get(RunAttempt, attempt_id)
+
+        assert terminal_finished_while_attempt_locked is True
+        assert attempt_transaction_still_open is True
+        assert probe_error is None
+        assert len(terminal_errors) == 1
+        error = terminal_errors[0]
+        assert type(error) is LeaseLostError
+        assert str(error) == "terminal database lock acquisition timed out"
+        assert isinstance(error.__cause__, OperationalError)
+        assert getattr(error.__cause__.orig, "sqlstate", None) == "55P03"
+        assert run.status is RunStatus.RUNNING
+        assert attempt.status is AttemptStatus.RUNNING
 
 
 class RichFailingRunner:
