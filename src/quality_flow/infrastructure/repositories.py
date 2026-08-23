@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -123,10 +124,15 @@ class RunRepository:
         artifacts: tuple[StoredArtifact, ...],
         *,
         now: datetime | None = None,
+        on_run_locked: Callable[[], None] | None = None,
     ) -> Run:
         terminal_at = now or datetime.now(UTC)
         run, attempt = self._lock_live_attempt(
-            run_id, attempt_id, lease_token, terminal_at
+            run_id,
+            attempt_id,
+            lease_token,
+            terminal_at,
+            on_run_locked=on_run_locked,
         )
 
         terminal_status = resolve_terminal_run_status(
@@ -255,6 +261,8 @@ class RunRepository:
         attempt_id: UUID,
         lease_token: UUID,
         checked_at: datetime,
+        *,
+        on_run_locked: Callable[[], None] | None = None,
     ) -> tuple[Run, RunAttempt]:
         """Lock Run then Attempt and prove the caller still owns the live lease."""
         run = self._session.scalar(
@@ -262,6 +270,8 @@ class RunRepository:
         )
         if run is None:
             raise LeaseLostError("run lease owner no longer exists")
+        if on_run_locked is not None:
+            on_run_locked()
         attempt = self._session.scalar(
             select(RunAttempt)
             .where(

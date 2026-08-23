@@ -7,7 +7,8 @@ import json
 import logging
 import os
 from pathlib import Path
-from threading import Barrier, Event
+from threading import Barrier, Event, Lock, enumerate as enumerate_threads
+import time
 from uuid import uuid4
 
 import pytest
@@ -706,6 +707,32 @@ class FailingArtifactStore:
         raise self._error
 
 
+class BlockingFailingArtifactStore:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+        self.started = Event()
+        self.release = Event()
+
+    def put(self, *_args, **_kwargs):
+        self.started.set()
+        assert self.release.wait(timeout=10)
+        raise self._error
+
+
+class MutableClock:
+    def __init__(self, value: datetime) -> None:
+        self._value = value
+        self._lock = Lock()
+
+    def __call__(self) -> datetime:
+        with self._lock:
+            return self._value
+
+    def set(self, value: datetime) -> None:
+        with self._lock:
+            self._value = value
+
+
 class PartiallyPersistableArtifactsRunner:
     def __init__(self, staging_root: Path) -> None:
         self._staging_root = staging_root
@@ -949,6 +976,108 @@ def test_artifact_persistence_failure_is_terminal_and_never_schedules_retry(
         assert retry_event_count == 0
         assert retry_outbox_count == 0
     assert execution_result is True
+    assert staging_root.is_dir()
+    assert not runner_staging.exists()
+    assert not (tmp_path / "workspaces" / str(run_id)).exists()
+
+
+def test_blocked_artifact_failure_crossing_lease_stays_terminal_without_retry(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "blocked-artifact-failure",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    initial_time = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    clock = MutableClock(initial_time)
+    staging_root = tmp_path / "runner-staging"
+    staging_root.mkdir()
+    runner_staging = staging_root / "attempt-output"
+    artifact_store = BlockingFailingArtifactStore(
+        ArtifactStoreError("sentinel delayed path")
+    )
+    worker = RunWorker(
+        session_factory,
+        runners={"pytest": RichFailingRunner(runner_staging)},
+        artifact_store=artifact_store,
+        workspace_root=tmp_path / "workspaces",
+        staging_root=staging_root,
+        lease_duration=timedelta(milliseconds=300),
+        clock=clock,
+    )
+
+    execution_result = None
+    execution_error = None
+    heartbeat_extended = False
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        execution = executor.submit(worker.execute, run_id)
+        assert artifact_store.started.wait(timeout=10)
+        heartbeat_time = initial_time + timedelta(milliseconds=200)
+        clock.set(heartbeat_time)
+        heartbeat_deadline = time.monotonic() + 2
+        while time.monotonic() < heartbeat_deadline:
+            with session_factory() as session:
+                attempt = session.scalar(
+                    select(RunAttempt).where(RunAttempt.run_id == run_id)
+                )
+                if (
+                    attempt.heartbeat_at == heartbeat_time
+                    and attempt.lease_expires_at
+                    == heartbeat_time + timedelta(milliseconds=300)
+                ):
+                    heartbeat_extended = True
+                    break
+            time.sleep(0.01)
+
+        reconciled_at = initial_time + timedelta(milliseconds=400)
+        clock.set(reconciled_at)
+        artifact_store.release.set()
+        try:
+            execution_result = execution.result(timeout=10)
+        except BaseException as error:
+            execution_error = error
+
+    reconciled = LeaseReconciler(session_factory).reconcile_once(now=reconciled_at)
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempts = session.scalars(
+            select(RunAttempt)
+            .where(RunAttempt.run_id == run_id)
+            .order_by(RunAttempt.attempt_no)
+        ).all()
+        retry_events = session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        retry_outbox = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == run_id,
+                OutboxEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+
+        assert run.status is RunStatus.INFRA_FAILED
+        assert run.outcome is RunOutcome.UNKNOWN
+        assert len(attempts) == 1
+        assert attempts[0].status is AttemptStatus.INFRA_FAILED
+        assert retry_events == []
+        assert retry_outbox == []
+
+    assert heartbeat_extended is True
+    assert execution_error is None
+    assert execution_result is True
+    assert reconciled == 0
+    assert not any(
+        thread.name.startswith("quality-flow-post-run-heartbeat-")
+        for thread in enumerate_threads()
+    )
     assert staging_root.is_dir()
     assert not runner_staging.exists()
     assert not (tmp_path / "workspaces" / str(run_id)).exists()

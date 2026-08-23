@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import logging
 from pathlib import Path
 import shutil
+from threading import Event, Lock, Thread
 from typing import Protocol
 from uuid import UUID
 
@@ -66,6 +67,74 @@ class ClaimedExecution:
     gate_policy: GatePolicy
 
 
+class _PostRunLeaseKeeper:
+    """Keep a claimed lease live until the terminal transaction fences its Run."""
+
+    def __init__(
+        self,
+        heartbeat: Callable[[], None],
+        *,
+        interval_seconds: float,
+        thread_name: str,
+    ) -> None:
+        self._heartbeat = heartbeat
+        self._interval_seconds = interval_seconds
+        self._thread = Thread(target=self._run, name=thread_name)
+        self._stop = Event()
+        self._heartbeat_lock = Lock()
+        self._error_lock = Lock()
+        self._error: BaseException | None = None
+        self._started = False
+
+    def __enter__(self) -> _PostRunLeaseKeeper:
+        self._heartbeat()
+        self._thread.start()
+        self._started = True
+        return self
+
+    def __exit__(
+        self,
+        _error_type: type[BaseException] | None,
+        error: BaseException | None,
+        _traceback: object,
+    ) -> bool:
+        try:
+            self.stop()
+        except BaseException as heartbeat_error:
+            if heartbeat_error is error:
+                return False
+            if error is not None:
+                raise heartbeat_error from error
+            raise
+        return False
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            with self._heartbeat_lock:
+                if self._stop.is_set():
+                    return
+                try:
+                    self._heartbeat()
+                except BaseException as error:
+                    with self._error_lock:
+                        self._error = error
+                    self._stop.set()
+                    return
+
+    def raise_if_failed(self) -> None:
+        with self._error_lock:
+            error = self._error
+        if error is not None:
+            raise error
+
+    def stop(self) -> None:
+        with self._heartbeat_lock:
+            self._stop.set()
+        if self._started:
+            self._thread.join()
+        self.raise_if_failed()
+
+
 class RunWorker:
     def __init__(
         self,
@@ -117,37 +186,54 @@ class RunWorker:
             outcome = _normalize_outcome(outcome)
             try:
                 stored_artifacts: list[StoredArtifact] = []
-                try:
-                    for artifact in outcome.artifacts:
-                        stored_artifacts.append(
-                            self._artifact_store.put(
-                                artifact.source_path,
-                                ArtifactMetadata(
-                                    run_id=claimed.run_id,
-                                    attempt_id=claimed.attempt_id,
-                                    artifact_type=artifact.artifact_type,
-                                    mime_type=artifact.mime_type,
-                                ),
-                                attempt_workspace=artifact.source_root,
+                heartbeat_interval = max(
+                    self._lease_duration.total_seconds() / 3,
+                    0.001,
+                )
+                with _PostRunLeaseKeeper(
+                    heartbeat,
+                    interval_seconds=heartbeat_interval,
+                    thread_name=(
+                        f"quality-flow-post-run-heartbeat-{claimed.attempt_id}"
+                    ),
+                ) as lease_keeper:
+                    try:
+                        for artifact in outcome.artifacts:
+                            stored_artifacts.append(
+                                self._artifact_store.put(
+                                    artifact.source_path,
+                                    ArtifactMetadata(
+                                        run_id=claimed.run_id,
+                                        attempt_id=claimed.attempt_id,
+                                        artifact_type=artifact.artifact_type,
+                                        mime_type=artifact.mime_type,
+                                    ),
+                                    attempt_workspace=artifact.source_root,
+                                )
                             )
+                            lease_keeper.raise_if_failed()
+                    except (ArtifactStoreError, OSError):
+                        self._discard_stored_artifacts(stored_artifacts)
+                        lease_keeper.raise_if_failed()
+                        self._record_artifact_failure(lease, lease_keeper)
+                        return True
+                    except BaseException:
+                        self._discard_stored_artifacts(stored_artifacts)
+                        raise
+                    persisted_outcome = _run_outcome(outcome)
+                    with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+                        uow.runs.record_terminal_aggregate(
+                            claimed.run_id,
+                            claimed.attempt_id,
+                            claimed.lease_token,
+                            outcome,
+                            persisted_outcome,
+                            tuple(stored_artifacts),
+                            now=self._clock(),
+                            on_run_locked=lease_keeper.stop,
                         )
-                except (ArtifactStoreError, OSError):
-                    self._discard_stored_artifacts(stored_artifacts)
-                    self._record_artifact_failure(lease)
+                        uow.commit()
                     return True
-                persisted_outcome = _run_outcome(outcome)
-                with SqlAlchemyUnitOfWork(self._session_factory) as uow:
-                    uow.runs.record_terminal_aggregate(
-                        claimed.run_id,
-                        claimed.attempt_id,
-                        claimed.lease_token,
-                        outcome,
-                        persisted_outcome,
-                        tuple(stored_artifacts),
-                        now=self._clock(),
-                    )
-                    uow.commit()
-                return True
             finally:
                 _cleanup_staging_roots(outcome, self._staging_root)
         finally:
@@ -261,7 +347,11 @@ class RunWorker:
             except Exception:
                 LOGGER.warning("artifact rollback failed")
 
-    def _record_artifact_failure(self, lease: ClaimedLease) -> None:
+    def _record_artifact_failure(
+        self,
+        lease: ClaimedLease,
+        lease_keeper: _PostRunLeaseKeeper,
+    ) -> None:
         failed_at = self._clock()
         outcome = RunnerOutcome(
             attempt_status=AttemptStatus.INFRA_FAILED,
@@ -281,6 +371,7 @@ class RunWorker:
                 RunOutcome.UNKNOWN,
                 (),
                 now=failed_at,
+                on_run_locked=lease_keeper.stop,
             )
             uow.commit()
 
