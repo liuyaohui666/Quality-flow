@@ -64,7 +64,7 @@ class RunRepository:
         now = now or datetime.now(UTC)
         next_attempt = (run.attempts[-1].attempt_no + 1) if run.attempts else 1
         run.status = RunStatus.RUNNING
-        run.started_at = now
+        run.started_at = run.started_at or now
         run.updated_at = now
         run.attempts.append(
             RunAttempt(

@@ -16,6 +16,10 @@ def test_completed_run_cannot_return_to_running() -> None:
         ensure_run_transition(RunStatus.COMPLETED, RunStatus.RUNNING)
 
 
+def test_running_run_can_return_to_queue_for_controlled_retry() -> None:
+    ensure_run_transition(RunStatus.RUNNING, RunStatus.QUEUED)
+
+
 @pytest.mark.parametrize(
     ("current", "next_status"),
     [

@@ -1,4 +1,4 @@
-"""Reconcile expired worker leases without retrying runs."""
+"""Reconcile expired worker leases with a controlled retry budget."""
 
 from __future__ import annotations
 
@@ -10,7 +10,22 @@ from sqlalchemy import select
 from quality_flow.domain.enums import AttemptStatus, RunOutcome, RunStatus
 from quality_flow.domain.state_machine import ensure_attempt_transition, ensure_run_transition
 from quality_flow.infrastructure.database import SessionFactory
-from quality_flow.infrastructure.models import Run, RunAttempt, RunEvent
+from quality_flow.infrastructure.models import OutboxEvent, Run, RunAttempt, RunEvent
+
+
+def _allows_worker_lost_retry(run: Run, attempt: RunAttempt) -> bool:
+    raw = run.suite_snapshot.get("retry_policy")
+    if not isinstance(raw, dict):
+        return False
+    max_attempts = raw.get("max_attempts")
+    retry_on = raw.get("retry_on")
+    return (
+        type(max_attempts) is int
+        and max_attempts == 2
+        and isinstance(retry_on, list)
+        and "worker_lost" in retry_on
+        and attempt.attempt_no < max_attempts
+    )
 
 
 class LeaseReconciler:
@@ -71,25 +86,57 @@ class LeaseReconciler:
                     continue
 
                 ensure_attempt_transition(attempt.status, AttemptStatus.ABANDONED)
-                ensure_run_transition(run.status, RunStatus.INFRA_FAILED)
                 attempt.status = AttemptStatus.ABANDONED
                 attempt.finished_at = reconciled_at
-                run.status = RunStatus.INFRA_FAILED
-                run.outcome = RunOutcome.UNKNOWN
-                run.finished_at = reconciled_at
-                run.updated_at = reconciled_at
-                session.add(
-                    RunEvent(
-                        run_id=run_id,
-                        event_type="run.abandoned",
-                        payload={
-                            "status": RunStatus.INFRA_FAILED.value,
-                            "outcome": RunOutcome.UNKNOWN.value,
-                            "attempt_status": AttemptStatus.ABANDONED.value,
-                            "attempt_id": str(attempt_id),
-                        },
-                        created_at=reconciled_at,
+                attempt.failure_reason = "worker lease expired"
+
+                if _allows_worker_lost_retry(run, attempt):
+                    ensure_run_transition(run.status, RunStatus.QUEUED)
+                    run.status = RunStatus.QUEUED
+                    run.outcome = RunOutcome.UNKNOWN
+                    run.finished_at = None
+                    run.updated_at = reconciled_at
+                    session.add(
+                        RunEvent(
+                            run_id=run_id,
+                            event_type="run.retry_scheduled",
+                            payload={
+                                "status": RunStatus.QUEUED.value,
+                                "outcome": RunOutcome.UNKNOWN.value,
+                                "attempt_no": attempt.attempt_no,
+                                "next_attempt_no": attempt.attempt_no + 1,
+                                "reason": "worker_lost",
+                            },
+                            created_at=reconciled_at,
+                        )
                     )
-                )
+                    session.add(
+                        OutboxEvent(
+                            aggregate_type="run",
+                            aggregate_id=run_id,
+                            event_type="run.retry_scheduled",
+                            payload={"run_id": str(run_id)},
+                            created_at=reconciled_at,
+                        )
+                    )
+                else:
+                    ensure_run_transition(run.status, RunStatus.INFRA_FAILED)
+                    run.status = RunStatus.INFRA_FAILED
+                    run.outcome = RunOutcome.UNKNOWN
+                    run.finished_at = reconciled_at
+                    run.updated_at = reconciled_at
+                    session.add(
+                        RunEvent(
+                            run_id=run_id,
+                            event_type="run.abandoned",
+                            payload={
+                                "status": RunStatus.INFRA_FAILED.value,
+                                "outcome": RunOutcome.UNKNOWN.value,
+                                "attempt_status": AttemptStatus.ABANDONED.value,
+                                "attempt_id": str(attempt_id),
+                            },
+                            created_at=reconciled_at,
+                        )
+                    )
                 reconciled += 1
         return reconciled

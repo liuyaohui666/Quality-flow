@@ -140,9 +140,26 @@ def test_real_postgres_publish_failure_keeps_outbox_pending_and_counted(
         assert event.publish_attempts == 1
 
 
-def _create_snapshot_run(session_factory, source: Path, key: str):
+def _create_snapshot_run(
+    session_factory,
+    source: Path,
+    key: str,
+    *,
+    retry_policy: dict[str, object] | None = None,
+):
     run_id = uuid4()
     now = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    suite_snapshot = {
+        "suite_id": "snapshot-suite",
+        "runner_type": "pytest",
+        "working_directory": str(source),
+        "argv": ["python", "-m", "pytest", "suite.py"],
+        "timeout_seconds": 5,
+        "allowed_parameters": {"scenario": ["stored"]},
+        "source_revision": "immutable-revision",
+    }
+    if retry_policy is not None:
+        suite_snapshot["retry_policy"] = retry_policy
     with session_factory.begin() as session:
         session.add(
             Run(
@@ -150,15 +167,7 @@ def _create_snapshot_run(session_factory, source: Path, key: str):
                 suite_id="snapshot-suite",
                 idempotency_key=key,
                 parameters={"scenario": "stored"},
-                suite_snapshot={
-                    "suite_id": "snapshot-suite",
-                    "runner_type": "pytest",
-                    "working_directory": str(source),
-                    "argv": ["python", "-m", "pytest", "suite.py"],
-                    "timeout_seconds": 5,
-                    "allowed_parameters": {"scenario": ["stored"]},
-                    "source_revision": "immutable-revision",
-                },
+                suite_snapshot=suite_snapshot,
                 gate_policy_snapshot={
                     "min_pass_rate": 1.0,
                     "max_failures": 0,
@@ -824,6 +833,250 @@ def test_real_terminal_commit_failure_rolls_back_entire_aggregate(
                 RunEvent.run_id == run_id, RunEvent.event_type == "run.finished"
             )
         ).all() == []
+
+
+def test_reconciler_requeues_first_expired_attempt_and_appends_retry_events(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "first-expiry-retry",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=claimed_at, lease_duration=timedelta(seconds=10)
+        )
+        attempt_id = run.attempts[-1].attempt_id
+        reconcile_at = run.attempts[-1].lease_expires_at
+        uow.commit()
+
+    assert LeaseReconciler(session_factory).reconcile_once(now=reconcile_at) == 1
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempt = session.get(RunAttempt, attempt_id)
+        retries = session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        retry_outbox = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == run_id,
+                OutboxEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        assert run.status is RunStatus.QUEUED
+        assert run.outcome is RunOutcome.UNKNOWN
+        assert run.finished_at is None
+        assert run.started_at == claimed_at
+        assert attempt.status is AttemptStatus.ABANDONED
+        assert attempt.finished_at == reconcile_at
+        assert attempt.failure_reason == "worker lease expired"
+        assert len(retries) == len(retry_outbox) == 1
+        assert retries[0].payload == {
+            "status": RunStatus.QUEUED.value,
+            "outcome": RunOutcome.UNKNOWN.value,
+            "attempt_no": 1,
+            "next_attempt_no": 2,
+            "reason": "worker_lost",
+        }
+        assert retry_outbox[0].payload == {"run_id": str(run_id)}
+        assert retry_outbox[0].published_at is None
+        assert retry_outbox[0].publish_attempts == 0
+
+
+def test_retry_claim_preserves_started_at_and_second_expiry_exhausts_budget(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "retry-budget",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    first_claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=first_claimed_at, lease_duration=timedelta(seconds=10)
+        )
+        first_expiry = run.attempts[-1].lease_expires_at
+        uow.commit()
+
+    assert LeaseReconciler(session_factory).reconcile_once(now=first_expiry) == 1
+
+    second_claimed_at = first_expiry + timedelta(seconds=1)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=second_claimed_at, lease_duration=timedelta(seconds=10)
+        )
+        assert run is not None
+        assert run.started_at == first_claimed_at
+        assert run.attempts[-1].attempt_no == 2
+        second_attempt_id = run.attempts[-1].attempt_id
+        second_expiry = run.attempts[-1].lease_expires_at
+        uow.commit()
+
+    assert LeaseReconciler(session_factory).reconcile_once(now=second_expiry) == 1
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempts = session.scalars(
+            select(RunAttempt)
+            .where(RunAttempt.run_id == run_id)
+            .order_by(RunAttempt.attempt_no)
+        ).all()
+        retries = session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        abandonments = session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.abandoned",
+            )
+        ).all()
+        retry_outbox = session.scalars(
+            select(OutboxEvent).where(OutboxEvent.aggregate_id == run_id)
+        ).all()
+        assert run.status is RunStatus.INFRA_FAILED
+        assert run.outcome is RunOutcome.UNKNOWN
+        assert run.finished_at == second_expiry
+        assert run.started_at == first_claimed_at
+        assert [attempt.attempt_no for attempt in attempts] == [1, 2]
+        assert [attempt.status for attempt in attempts] == [
+            AttemptStatus.ABANDONED,
+            AttemptStatus.ABANDONED,
+        ]
+        assert attempts[-1].attempt_id == second_attempt_id
+        assert attempts[-1].failure_reason == "worker lease expired"
+        assert len(retries) == len(abandonments) == len(retry_outbox) == 1
+        assert retry_outbox[0].event_type == "run.retry_scheduled"
+
+
+def test_two_reconcilers_schedule_exactly_one_retry_event_and_outbox(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "two-reconciler-retry",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=claimed_at, lease_duration=timedelta(seconds=5)
+        )
+        reconcile_at = run.attempts[-1].lease_expires_at
+        uow.commit()
+
+    barrier = Barrier(2)
+
+    def reconcile() -> int:
+        barrier.wait(timeout=10)
+        return LeaseReconciler(session_factory).reconcile_once(now=reconcile_at)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = [executor.submit(reconcile) for _ in range(2)]
+        assert sum(result.result(timeout=10) for result in results) == 1
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempts = session.scalars(
+            select(RunAttempt).where(RunAttempt.run_id == run_id)
+        ).all()
+        retries = session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        retry_outbox = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == run_id,
+                OutboxEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        assert run.status is RunStatus.QUEUED
+        assert attempts[0].status is AttemptStatus.ABANDONED
+        assert len(attempts) == len(retries) == len(retry_outbox) == 1
+
+
+def test_retry_commit_failure_rolls_back_run_attempt_and_events(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "retry-rollback",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=claimed_at, lease_duration=timedelta(seconds=5)
+        )
+        attempt_id = run.attempts[-1].attempt_id
+        reconcile_at = run.attempts[-1].lease_expires_at
+        uow.commit()
+
+    class FailingRetryFlushSession(Session):
+        def flush(self, objects=None) -> None:
+            fail_after_flush = any(
+                isinstance(row, OutboxEvent)
+                and row.event_type == "run.retry_scheduled"
+                for row in self.new
+            )
+            super().flush(objects)
+            if fail_after_flush:
+                raise RuntimeError("injected retry commit failure")
+
+    failing_factory = sessionmaker(
+        bind=session_factory.kw["bind"],
+        class_=FailingRetryFlushSession,
+        expire_on_commit=False,
+    )
+    with pytest.raises(RuntimeError, match="injected retry commit failure"):
+        LeaseReconciler(failing_factory).reconcile_once(now=reconcile_at)
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempt = session.get(RunAttempt, attempt_id)
+        retry_events = session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        retry_outbox = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == run_id,
+                OutboxEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        assert run.status is RunStatus.RUNNING
+        assert run.outcome is RunOutcome.UNKNOWN
+        assert run.finished_at is None
+        assert attempt.status is AttemptStatus.RUNNING
+        assert attempt.finished_at is None
+        assert attempt.failure_reason is None
+        assert retry_events == []
+        assert retry_outbox == []
 
 
 def test_reconciler_abandons_expired_lease_and_fences_old_worker(

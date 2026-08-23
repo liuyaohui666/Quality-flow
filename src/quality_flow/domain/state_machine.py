@@ -13,7 +13,12 @@ class InvalidStateTransition(ValueError):
 _RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = {
     RunStatus.QUEUED: frozenset({RunStatus.RUNNING}),
     RunStatus.RUNNING: frozenset(
-        {RunStatus.COMPLETED, RunStatus.INFRA_FAILED, RunStatus.TIMED_OUT}
+        {
+            RunStatus.QUEUED,
+            RunStatus.COMPLETED,
+            RunStatus.INFRA_FAILED,
+            RunStatus.TIMED_OUT,
+        }
     ),
 }
 
