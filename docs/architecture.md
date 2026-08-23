@@ -32,7 +32,7 @@ sequenceDiagram
     X-->>W: RunnerOutcome + staged files
     W->>S: copy/checksum artifacts
     W->>P: result aggregate + terminal event (one transaction)
-    L->>P: fence and abandon expired leases
+    L->>P: fence expired lease; retry once or terminate
 ```
 
 PostgreSQL 是唯一权威状态源。Redis/Celery 只传递标识符，不拥有 Run 或 Attempt 状态。Redis 丢失一条尚未确认的消息时，PostgreSQL 中未发布的 Outbox 仍可重投。
@@ -75,9 +75,11 @@ Run 是一次逻辑测试；Attempt 是一次物理领取。领取时同时：
 - 写入 heartbeat 与 lease expiry；
 - 追加 `run.started`。
 
-执行期间 heartbeat 使用 Attempt ID + lease token 的条件更新。终态事务也必须携带同一 token。Reconciler 对过期租约加锁并再次检查 token/expiry；成功后将 Attempt 置 `abandoned`，Run 置 `infra_failed/unknown`。旧 Worker 随后提交时因 token/终态不匹配而被拒绝。
+执行期间以及 Runner 返回后的 Artifact 持久化阶段，heartbeat 使用 Attempt ID + lease token 的条件更新。终态事务也必须携带同一 token；它锁住 Run 后停止并回收 post-run heartbeat，再锁 Attempt 完成 fencing。Reconciler 对过期租约按同一 Run -> Attempt 顺序加锁并再次检查 token/expiry。旧 Worker 随后提交时因 token/终态不匹配而被拒绝。
 
-V1 不自动重试，也不承诺物理测试进程绝不启动两次；它保证重复消息不会形成第二份有效业务结果。
+只有 Run 的不可变 suite snapshot 显式允许 `worker_lost`，且首次 Attempt 的 lease 过期时，Reconciler 才会把 Attempt 1 置 `abandoned`，并在一个 PostgreSQL 事务中将同一 Run 重新排队、记录 `run.retry_scheduled` 和新增 Outbox；随后最多创建 Attempt 2。Attempt 2 再次失联，或测试、门禁、超时、配置、解析、输出、Artifact 等其他失败，均不自动重试，而是收敛到各自终态。`restful-booker-api` 因写入共享外部服务而明确禁用此策略。
+
+这不是通用自动重试，也不承诺物理测试进程绝不启动两次；它只对显式套件的首次 `worker_lost` 自动重试一次，并保证重复消息不会超出该 Attempt 预算形成额外有效业务结果。
 
 ## 7. Runner 与执行边界
 
@@ -145,7 +147,7 @@ V1 使用 Compose/进程文本日志，不声称统一 JSON 结构化日志。Ru
 ## 12. 当前边界
 
 - 单主机 Compose、单 Worker concurrency；无高可用/灾备。
-- 无认证/RBAC、多租户、retry/cancel 和调度。
+- 无认证/RBAC、多租户、通用 retry/cancel 和调度；仅支持显式套件的首次 `worker_lost` 自动重试一次。
 - Redis 无 HA，且不是权威状态源。
 - Locust 仅单用户、本地确定性靶场；无多节点压测。
 - Artifact 仅本地 named volume；无下载、删除、对象存储和 GC。

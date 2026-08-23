@@ -10,7 +10,7 @@ V1 使用 Python 3.12、FastAPI、PostgreSQL、Redis/Celery、pytest、Locust �
 
 - 同一 `Idempotency-Key` 的重复或并发提交只对应一个逻辑 Run。
 - Run、初始事件和 Outbox 在 PostgreSQL 同一事务中创建，避免“数据库已写入但消息丢失”。
-- Redis/Celery 采用 at-least-once 传递；Worker 的数据库条件领取保证重复消息不会产生第二份有效结果。
+- Redis/Celery 采用 at-least-once 传递；Worker 的数据库条件领取保证重复消息不会产生超出重试策略预算的额外有效结果。
 - Run 与 Attempt 分离，并用 lease token、心跳、过期时间和 Reconciler 识别 Worker 失联。
 - pytest 的断言失败、Locust 的性能门禁失败、Runner 基础设施失败和执行超时具有不同终态。
 - stdout、stderr、JUnit XML 和 Locust CSV 按 Run/Attempt 隔离，公开 API 只返回安全元数据。
@@ -39,7 +39,7 @@ flowchart LR
 | Dispatcher | 轮询未发布 Outbox，向 Celery 投递仅含标识符的消息 |
 | Redis/Celery | 非权威的异步传输层；不承担业务状态 |
 | Worker/Runner | 领取 Run，在独立工作区执行固定 pytest/Locust 命令并生成结构化结果 |
-| Reconciler | 扫描过期租约，围栏旧 Worker，将失联执行收敛到基础设施失败 |
+| Reconciler | 扫描过期租约并围栏旧 Worker；仅为显式启用策略的首次 `worker_lost` 安排一次重试，否则收敛到基础设施失败 |
 | ArtifactStore | 原子复制诊断文件，记录 SHA-256、大小、MIME 和 Attempt 归属 |
 | Demo Target | 只在本地稳定制造成功、断言失败、超时和 P95 退化 |
 
@@ -186,7 +186,7 @@ docker compose -p quality-flow-demo logs --no-color
 - 逻辑幂等：PostgreSQL 唯一键决定并发赢家；冲突请求在新事务中回读同一 Run。
 - 原子受理：Run、`run.queued` 和 Outbox 同事务提交。
 - at-least-once：发布成功但标记失败时允许重投；不承诺 exactly-once 物理执行。
-- 条件领取：只有 `queued` Run 能生成第一份有效 Attempt；重复消息为 no-op。
+- 条件领取：只有 `queued` Run 能生成当前策略预算内的下一份有效 Attempt；`running` 或终态 Run 收到重复消息时为 no-op。
 - 租约围栏：终态写入必须携带当前 lease token；过期/旧 Worker 不能覆盖新状态。
 - 故障收敛：Reconciler 将过期 Attempt 置为 abandoned；只有套件显式启用 `worker_lost` 策略且 Attempt 1 租约过期时，Run 才会重新排队一次，否则收敛为 `infra_failed/unknown`。
 - 终态原子性：case、metric、gate、Artifact 元数据、Attempt、Run 和 terminal event 在一个数据库事务中提交。
