@@ -1,3 +1,4 @@
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 import os
 import subprocess
@@ -7,6 +8,7 @@ import pytest
 from quality_flow.infrastructure.config import Settings
 from quality_flow.suites.registry import (
     InvalidSuiteParameter,
+    SuiteRegistryError,
     SuiteRegistry,
     UnknownSuiteError,
 )
@@ -81,6 +83,40 @@ def test_repository_registry_registers_restful_booker_api(
         suite.resolve_parameters({"base_url": "https://example.test"})
     assert suite.gate_policy.min_pass_rate == 1.0
     assert suite.gate_policy.max_failures == 0
+
+
+def test_registry_parses_conservative_retry_policy(registry: SuiteRegistry) -> None:
+    policy = registry.get("demo-api").retry_policy
+
+    assert policy.max_attempts == 2
+    assert policy.retry_on == frozenset({"worker_lost"})
+    assert registry.get("restful-booker-api").retry_policy.max_attempts == 1
+    with pytest.raises(FrozenInstanceError):
+        policy.max_attempts = 1
+
+
+@pytest.mark.parametrize(
+    "policy_yaml",
+    [
+        "max_attempts: 0\nretry_on: [worker_lost]",
+        "max_attempts: true\nretry_on: [worker_lost]",
+        "max_attempts: 3\nretry_on: [worker_lost]",
+        "max_attempts: 2\nretry_on: [timeout]",
+    ],
+)
+def test_registry_rejects_invalid_retry_policy(
+    tmp_path: Path, policy_yaml: str
+) -> None:
+    config = tmp_path / "suites.yaml"
+    config.write_text(
+        "suites:\n  demo:\n    runner_type: pytest\n"
+        "    working_directory: .\n    argv: [python]\n"
+        "    timeout_seconds: 1\n    source_revision: test\n"
+        f"    retry_policy:\n      {policy_yaml.replace(chr(10), chr(10) + '      ')}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SuiteRegistryError, match="retry_policy"):
+        SuiteRegistry.from_yaml(config, tmp_path)
 
 
 def test_settings_rejects_symlinked_config_outside_project_root(

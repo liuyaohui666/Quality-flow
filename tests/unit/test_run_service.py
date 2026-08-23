@@ -118,6 +118,10 @@ def test_create_run_stores_resolved_suite_and_gate_policy_snapshots(
         "timeout_seconds": 3,
         "allowed_parameters": {"scenario": ["ok", "error", "slow"]},
         "source_revision": "main",
+        "retry_policy": {
+            "max_attempts": 2,
+            "retry_on": ["worker_lost"],
+        },
     }
     assert run.gate_policy_snapshot == {
         "min_pass_rate": 1.0,

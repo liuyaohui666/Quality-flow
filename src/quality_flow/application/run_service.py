@@ -110,6 +110,10 @@ class RunService:
                         for name, values in suite.allowed_parameters.items()
                     },
                     "source_revision": suite.source_revision,
+                    "retry_policy": {
+                        "max_attempts": suite.retry_policy.max_attempts,
+                        "retry_on": sorted(suite.retry_policy.retry_on),
+                    },
                 },
                 gate_policy_snapshot=asdict(suite.gate_policy),
                 status=RunStatus.QUEUED,

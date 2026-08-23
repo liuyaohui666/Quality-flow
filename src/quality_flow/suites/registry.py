@@ -32,6 +32,12 @@ class GatePolicy:
 
 
 @dataclass(frozen=True)
+class RetryPolicy:
+    max_attempts: int = 1
+    retry_on: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
 class SuiteDefinition:
     suite_id: str
     runner_type: Literal["pytest", "locust"]
@@ -40,6 +46,7 @@ class SuiteDefinition:
     timeout_seconds: int
     allowed_parameters: Mapping[str, tuple[str, ...]]
     gate_policy: GatePolicy
+    retry_policy: RetryPolicy
     source_revision: str
 
     def __post_init__(self) -> None:
@@ -130,6 +137,10 @@ class SuiteRegistry:
         except TypeError as error:
             raise SuiteRegistryError(f"Suite {suite_id!r} has an invalid gate_policy") from error
 
+        retry_policy = SuiteRegistry._parse_retry_policy(
+            raw_suite.get("retry_policy"), suite_id
+        )
+
         return SuiteDefinition(
             suite_id=suite_id,
             runner_type=runner_type,
@@ -138,8 +149,39 @@ class SuiteRegistry:
             timeout_seconds=timeout_seconds,
             allowed_parameters=allowed_parameters,
             gate_policy=gate_policy,
+            retry_policy=retry_policy,
             source_revision=source_revision,
         )
+
+    @staticmethod
+    def _parse_retry_policy(raw_policy: object, suite_id: str) -> RetryPolicy:
+        if raw_policy is None:
+            return RetryPolicy()
+        if not isinstance(raw_policy, dict) or set(raw_policy) - {
+            "max_attempts",
+            "retry_on",
+        }:
+            raise SuiteRegistryError(f"Suite {suite_id!r} has an invalid retry_policy")
+        max_attempts = raw_policy.get("max_attempts", 1)
+        retry_on = raw_policy.get("retry_on", [])
+        if type(max_attempts) is not int or max_attempts not in (1, 2):
+            raise SuiteRegistryError(
+                f"Suite {suite_id!r} retry_policy max_attempts must be 1 or 2"
+            )
+        if isinstance(retry_on, str) or not isinstance(retry_on, list):
+            raise SuiteRegistryError(
+                f"Suite {suite_id!r} retry_policy retry_on must be a list"
+            )
+        if not all(reason == "worker_lost" for reason in retry_on):
+            raise SuiteRegistryError(
+                f"Suite {suite_id!r} retry_policy contains an unknown reason"
+            )
+        reasons = frozenset(retry_on)
+        if reasons and max_attempts != 2:
+            raise SuiteRegistryError(
+                f"Suite {suite_id!r} retry_policy needs max_attempts 2"
+            )
+        return RetryPolicy(max_attempts=max_attempts, retry_on=reasons)
 
     @staticmethod
     def _resolve_working_directory(raw_path: object, project_root: Path) -> Path:
