@@ -14,17 +14,21 @@ from quality_flow.infrastructure.models import OutboxEvent, Run, RunAttempt, Run
 
 
 def _allows_worker_lost_retry(run: Run, attempt: RunAttempt) -> bool:
-    raw = run.suite_snapshot.get("retry_policy")
-    if not isinstance(raw, dict):
+    snapshot = run.suite_snapshot
+    if type(snapshot) is not dict:
+        return False
+    raw = snapshot.get("retry_policy")
+    if type(raw) is not dict or set(raw) != {"max_attempts", "retry_on"}:
         return False
     max_attempts = raw.get("max_attempts")
     retry_on = raw.get("retry_on")
     return (
         type(max_attempts) is int
         and max_attempts == 2
-        and isinstance(retry_on, list)
-        and "worker_lost" in retry_on
-        and attempt.attempt_no < max_attempts
+        and type(retry_on) is list
+        and retry_on == ["worker_lost"]
+        and type(attempt.attempt_no) is int
+        and attempt.attempt_no == 1
     )
 
 

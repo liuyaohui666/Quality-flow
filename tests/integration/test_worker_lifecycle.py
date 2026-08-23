@@ -186,16 +186,19 @@ def _create_snapshot_run(
 
 
 class BlockingPassingRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, finished_at: datetime | None = None) -> None:
         self.started = Event()
         self.release = Event()
         self.calls = []
+        self.finished_at = finished_at or datetime(
+            2026, 8, 10, 2, 0, 2, tzinfo=UTC
+        )
 
     def run(self, spec, workspace, heartbeat):
         self.calls.append((spec, workspace, heartbeat))
         self.started.set()
         assert self.release.wait(timeout=10)
-        now = datetime(2026, 8, 10, 2, 0, 2, tzinfo=UTC)
+        now = self.finished_at
         return RunnerOutcome(
             attempt_status=AttemptStatus.PASSED,
             exit_code=0,
@@ -266,6 +269,93 @@ def test_concurrent_duplicate_delivery_claims_exact_run_once_with_valid_lease(
                 select(RunAttempt).where(RunAttempt.run_id == run_id)
             ).all()
         ) == 1
+
+
+def test_concurrent_duplicate_retry_deliveries_claim_attempt_two_once(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "suite.py").write_text("# immutable source\n", encoding="utf-8")
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "duplicate-retry-delivery",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    first_claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=first_claimed_at, lease_duration=timedelta(seconds=5)
+        )
+        first_attempt_id = run.attempts[-1].attempt_id
+        first_expiry = run.attempts[-1].lease_expires_at
+        uow.commit()
+
+    assert LeaseReconciler(session_factory).reconcile_once(now=first_expiry) == 1
+
+    second_claimed_at = first_expiry + timedelta(seconds=1)
+    runner = BlockingPassingRunner(
+        finished_at=second_claimed_at + timedelta(seconds=2)
+    )
+    worker = RunWorker(
+        session_factory,
+        runners={"pytest": runner},
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
+        workspace_root=tmp_path / "workspaces",
+        staging_root=tmp_path / "staging",
+        lease_duration=timedelta(seconds=30),
+        clock=lambda: second_claimed_at,
+    )
+    simultaneous_delivery = Barrier(3)
+
+    def deliver(worker_id: str) -> bool:
+        simultaneous_delivery.wait(timeout=10)
+        return worker.execute(run_id, worker_id=worker_id)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        deliveries = [
+            executor.submit(deliver, "stale-request-delivery"),
+            executor.submit(deliver, "retry-event-delivery"),
+        ]
+        simultaneous_delivery.wait(timeout=10)
+        assert runner.started.wait(timeout=10)
+
+        with session_factory() as session:
+            run = session.get(Run, run_id)
+            attempts = session.scalars(
+                select(RunAttempt)
+                .where(RunAttempt.run_id == run_id)
+                .order_by(RunAttempt.attempt_no)
+            ).all()
+            assert run.status is RunStatus.RUNNING
+            assert run.started_at == first_claimed_at
+            assert [attempt.attempt_no for attempt in attempts] == [1, 2]
+            assert [attempt.status for attempt in attempts] == [
+                AttemptStatus.ABANDONED,
+                AttemptStatus.RUNNING,
+            ]
+            assert attempts[0].attempt_id == first_attempt_id
+            assert attempts[1].worker_id in {
+                "stale-request-delivery",
+                "retry-event-delivery",
+            }
+
+        runner.release.set()
+        assert sorted(delivery.result(timeout=10) for delivery in deliveries) == [
+            False,
+            True,
+        ]
+
+    assert len(runner.calls) == 1
+    with session_factory() as session:
+        attempts = session.scalars(
+            select(RunAttempt)
+            .where(RunAttempt.run_id == run_id)
+            .order_by(RunAttempt.attempt_no)
+        ).all()
+        assert len(attempts) == 2
+        assert attempts[1].status is AttemptStatus.PASSED
 
 
 def test_worker_terminalizes_attempt_workspace_root_overlapping_suite_source(
@@ -1322,6 +1412,108 @@ def test_terminal_vs_reconcile_race_never_creates_mixed_state(
             )
             assert event_types.count("run.abandoned") == 1
             assert "run.finished" not in event_types
+
+
+def test_retry_enabled_terminal_vs_reconcile_race_never_creates_mixed_state(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "retry-terminal-reconcile-race",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=claimed_at, lease_duration=timedelta(seconds=10)
+        )
+        attempt_id = run.attempts[-1].attempt_id
+        token = run.attempts[-1].lease_token
+        uow.commit()
+
+    terminal = RunnerOutcome(
+        attempt_status=AttemptStatus.PASSED,
+        exit_code=0,
+        started_at=claimed_at,
+        finished_at=claimed_at + timedelta(seconds=9),
+        gate_result=GateResult(True, (), {}),
+    )
+    barrier = Barrier(2)
+
+    def finalize() -> str:
+        barrier.wait(timeout=10)
+        try:
+            with SqlAlchemyUnitOfWork(session_factory) as uow:
+                uow.runs.record_terminal_aggregate(
+                    run_id,
+                    attempt_id,
+                    token,
+                    terminal,
+                    RunOutcome.PASSED,
+                    (),
+                    now=claimed_at + timedelta(seconds=9),
+                )
+                uow.commit()
+            return "finished"
+        except LeaseLostError:
+            return "lost"
+
+    def reconcile() -> int:
+        barrier.wait(timeout=10)
+        return LeaseReconciler(session_factory).reconcile_once(
+            now=claimed_at + timedelta(seconds=11)
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        final_future = executor.submit(finalize)
+        reconcile_future = executor.submit(reconcile)
+        result = (final_future.result(timeout=10), reconcile_future.result(timeout=10))
+
+    assert result in {("finished", 0), ("lost", 1)}
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempt = session.get(RunAttempt, attempt_id)
+        event_types = session.scalars(
+            select(RunEvent.event_type).where(RunEvent.run_id == run_id)
+        ).all()
+        retry_events = session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        retry_outbox = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == run_id,
+                OutboxEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        if result == ("finished", 0):
+            assert (run.status, run.outcome, attempt.status) == (
+                RunStatus.COMPLETED,
+                RunOutcome.PASSED,
+                AttemptStatus.PASSED,
+            )
+            assert event_types.count("run.finished") == 1
+            assert "run.abandoned" not in event_types
+            assert retry_events == []
+            assert retry_outbox == []
+        else:
+            assert (run.status, run.outcome, attempt.status) == (
+                RunStatus.QUEUED,
+                RunOutcome.UNKNOWN,
+                AttemptStatus.ABANDONED,
+            )
+            assert run.finished_at is None
+            assert attempt.failure_reason == "worker lease expired"
+            assert "run.finished" not in event_types
+            assert "run.abandoned" not in event_types
+            assert event_types.count("run.retry_scheduled") == 1
+            assert len(retry_events) == len(retry_outbox) == 1
+            assert retry_outbox[0].published_at is None
 
 
 def test_real_redis_transport_uses_isolated_database_and_unique_queue() -> None:
