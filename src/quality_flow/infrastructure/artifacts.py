@@ -164,6 +164,10 @@ class FileArtifactStore:
             raise UnsafeArtifactPath("artifact URI does not name a regular file")
         return resolved
 
+    def discard(self, uri: str) -> None:
+        """Remove one store-generated artifact after validating its opaque URI."""
+        self.resolve(uri).unlink()
+
     def _validated_root(self) -> Path:
         self._root.mkdir(parents=True, exist_ok=True)
         self._ensure_no_reparse_points(self._root)

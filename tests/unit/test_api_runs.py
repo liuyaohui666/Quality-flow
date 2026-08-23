@@ -291,6 +291,39 @@ def test_run_reader_uses_latest_attempt_results_but_keeps_all_artifacts() -> Non
     }
 
 
+def test_run_reader_returns_empty_result_collections_without_attempts() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    run_id = uuid4()
+    now = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with session_factory.begin() as session:
+        session.add(
+            Run(
+                run_id=run_id,
+                suite_id="demo-api",
+                idempotency_key="reader-without-attempts",
+                parameters={},
+                suite_snapshot={},
+                gate_policy_snapshot={},
+                status=RunStatus.QUEUED,
+                outcome=RunOutcome.UNKNOWN,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    run = SqlAlchemyRunReader(session_factory).get_run(run_id)
+
+    assert run is not None
+    assert run.attempts == []
+    assert run.case_results == []
+    assert run.metrics == []
+    assert run.gates == []
+    assert run.artifacts == []
+
+
 def test_events_artifacts_and_health_contracts(client: TestClient) -> None:
     created = client.post(
         "/api/v1/runs",

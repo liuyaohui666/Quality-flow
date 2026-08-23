@@ -47,6 +47,26 @@ def test_store_copies_only_regular_file_inside_declared_attempt_workspace(
     assert store.resolve(stored.uri).read_bytes() == b"<testsuites />"
 
 
+def test_store_discards_only_an_opaque_artifact_inside_its_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "results.xml"
+    source.write_bytes(b"<testsuites />")
+    root = tmp_path / "artifact-root"
+    store = FileArtifactStore(root)
+    stored = store.put(source, metadata(), attempt_workspace=workspace)
+    stored_path = store.resolve(stored.uri)
+    outside = tmp_path / "outside.xml"
+    outside.write_bytes(b"preserve")
+
+    store.discard(stored.uri)
+
+    assert not stored_path.exists()
+    with pytest.raises(UnsafeArtifactPath):
+        store.discard(str(outside))
+    assert outside.read_bytes() == b"preserve"
+
+
 def test_store_rejects_source_outside_workspace_and_parent_traversal(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

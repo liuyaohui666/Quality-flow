@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+import logging
 from pathlib import Path
 import shutil
 from typing import Protocol
@@ -15,12 +16,16 @@ from quality_flow.infrastructure.artifacts import (
     ArtifactMetadata,
     ArtifactStoreError,
     FileArtifactStore,
+    StoredArtifact,
 )
 from quality_flow.infrastructure.database import SessionFactory, SqlAlchemyUnitOfWork
 from quality_flow.infrastructure.models import Run
 from quality_flow.runners.base import ExecutionSpec, RunnerOutcome
 from quality_flow.runners.subprocess_runner import RunnerConfigurationError
 from quality_flow.suites.registry import GatePolicy
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class Runner(Protocol):
@@ -111,21 +116,23 @@ class RunWorker:
 
             outcome = _normalize_outcome(outcome)
             try:
+                stored_artifacts: list[StoredArtifact] = []
                 try:
-                    stored_artifacts = tuple(
-                        self._artifact_store.put(
-                            artifact.source_path,
-                            ArtifactMetadata(
-                                run_id=claimed.run_id,
-                                attempt_id=claimed.attempt_id,
-                                artifact_type=artifact.artifact_type,
-                                mime_type=artifact.mime_type,
-                            ),
-                            attempt_workspace=artifact.source_root,
+                    for artifact in outcome.artifacts:
+                        stored_artifacts.append(
+                            self._artifact_store.put(
+                                artifact.source_path,
+                                ArtifactMetadata(
+                                    run_id=claimed.run_id,
+                                    attempt_id=claimed.attempt_id,
+                                    artifact_type=artifact.artifact_type,
+                                    mime_type=artifact.mime_type,
+                                ),
+                                attempt_workspace=artifact.source_root,
+                            )
                         )
-                        for artifact in outcome.artifacts
-                    )
                 except (ArtifactStoreError, OSError):
+                    self._discard_stored_artifacts(stored_artifacts)
                     self._record_artifact_failure(lease)
                     return True
                 persisted_outcome = _run_outcome(outcome)
@@ -136,7 +143,7 @@ class RunWorker:
                         claimed.lease_token,
                         outcome,
                         persisted_outcome,
-                        stored_artifacts,
+                        tuple(stored_artifacts),
                         now=self._clock(),
                     )
                     uow.commit()
@@ -246,6 +253,13 @@ class RunWorker:
                 now=failed_at,
             )
             uow.commit()
+
+    def _discard_stored_artifacts(self, artifacts: list[StoredArtifact]) -> None:
+        for artifact in reversed(artifacts):
+            try:
+                self._artifact_store.discard(artifact.uri)
+            except Exception:
+                LOGGER.warning("artifact rollback failed")
 
     def _record_artifact_failure(self, lease: ClaimedLease) -> None:
         failed_at = self._clock()

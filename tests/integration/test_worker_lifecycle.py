@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import base64
 from datetime import UTC, datetime, timedelta
 import json
+import logging
 import os
 from pathlib import Path
 from threading import Barrier, Event
@@ -705,6 +706,35 @@ class FailingArtifactStore:
         raise self._error
 
 
+class PartiallyPersistableArtifactsRunner:
+    def __init__(self, staging_root: Path) -> None:
+        self._staging_root = staging_root
+
+    def run(self, spec, workspace, heartbeat):
+        self._staging_root.mkdir(parents=True)
+        first = self._staging_root / "first.txt"
+        second = self._staging_root / "second.txt"
+        first.write_bytes(b"1")
+        second.write_bytes(b"22")
+        finished_at = datetime(2026, 8, 10, 2, 0, 2, tzinfo=UTC)
+        return RunnerOutcome(
+            attempt_status=AttemptStatus.PASSED,
+            exit_code=0,
+            started_at=finished_at - timedelta(seconds=1),
+            finished_at=finished_at,
+            gate_result=GateResult(True, (), {"pass_rate": 1.0}),
+            artifacts=(
+                RunnerArtifact("first", first, self._staging_root, "text/plain"),
+                RunnerArtifact("second", second, self._staging_root, "text/plain"),
+            ),
+        )
+
+
+class CleanupFailingFileArtifactStore(FileArtifactStore):
+    def discard(self, uri: str) -> None:
+        raise OSError("sentinel cleanup path")
+
+
 class MixedOwnershipArtifactRunner:
     def __init__(self, external_root: Path, service_child: Path) -> None:
         self._external_root = external_root
@@ -919,6 +949,111 @@ def test_artifact_persistence_failure_is_terminal_and_never_schedules_retry(
         assert retry_event_count == 0
         assert retry_outbox_count == 0
     assert execution_result is True
+    assert staging_root.is_dir()
+    assert not runner_staging.exists()
+    assert not (tmp_path / "workspaces" / str(run_id)).exists()
+
+
+def test_later_artifact_failure_rolls_back_files_already_stored_in_batch(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "artifact-batch-rollback",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    artifact_root = tmp_path / "artifacts"
+    staging_root = tmp_path / "runner-staging"
+    runner_staging = staging_root / "attempt-output"
+    worker = RunWorker(
+        session_factory,
+        runners={"pytest": PartiallyPersistableArtifactsRunner(runner_staging)},
+        artifact_store=FileArtifactStore(artifact_root, max_file_bytes=1),
+        workspace_root=tmp_path / "workspaces",
+        staging_root=staging_root,
+        clock=lambda: datetime(2026, 8, 10, 2, 0, 3, tzinfo=UTC),
+    )
+
+    assert worker.execute(run_id) is True
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempt = session.scalar(
+            select(RunAttempt).where(RunAttempt.run_id == run_id)
+        )
+        artifacts = session.scalars(
+            select(Artifact).where(Artifact.attempt_id == attempt.attempt_id)
+        ).all()
+        retry_events = session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+        retry_outbox = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == run_id,
+                OutboxEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+
+        assert run.status is RunStatus.INFRA_FAILED
+        assert run.outcome is RunOutcome.UNKNOWN
+        assert attempt.status is AttemptStatus.INFRA_FAILED
+        assert artifacts == []
+        assert retry_events == []
+        assert retry_outbox == []
+
+    permanent_files = [
+        path for path in artifact_root.rglob("*") if path.is_file()
+    ]
+    assert permanent_files == []
+
+
+def test_artifact_rollback_cleanup_error_is_safely_logged_and_still_terminal(
+    session_factory, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "artifact-rollback-cleanup-error",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    staging_root = tmp_path / "runner-staging"
+    worker = RunWorker(
+        session_factory,
+        runners={
+            "pytest": PartiallyPersistableArtifactsRunner(
+                staging_root / "attempt-output"
+            )
+        },
+        artifact_store=CleanupFailingFileArtifactStore(
+            tmp_path / "artifacts", max_file_bytes=1
+        ),
+        workspace_root=tmp_path / "workspaces",
+        staging_root=staging_root,
+        clock=lambda: datetime(2026, 8, 10, 2, 0, 3, tzinfo=UTC),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="quality_flow.application.worker"):
+        assert worker.execute(run_id) is True
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempt = session.scalar(
+            select(RunAttempt).where(RunAttempt.run_id == run_id)
+        )
+        assert run.status is RunStatus.INFRA_FAILED
+        assert attempt.status is AttemptStatus.INFRA_FAILED
+    assert [record.getMessage() for record in caplog.records] == [
+        "artifact rollback failed"
+    ]
+    assert "sentinel cleanup path" not in caplog.text
 
 
 def test_real_terminal_commit_failure_rolls_back_entire_aggregate(
