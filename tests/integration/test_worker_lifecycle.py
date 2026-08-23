@@ -25,7 +25,11 @@ from quality_flow.application.reconciler import LeaseReconciler
 from quality_flow.application.run_service import RunService
 from quality_flow.application.worker import RunWorker
 from quality_flow.domain.enums import AttemptStatus, RunOutcome, RunStatus
-from quality_flow.infrastructure.artifacts import ArtifactMetadata, FileArtifactStore
+from quality_flow.infrastructure.artifacts import (
+    ArtifactMetadata,
+    ArtifactStoreError,
+    FileArtifactStore,
+)
 from quality_flow.infrastructure.celery_app import CeleryRunPublisher, create_celery_app
 from quality_flow.infrastructure.database import (
     SqlAlchemyUnitOfWork,
@@ -693,6 +697,14 @@ class RichFailingRunner:
         )
 
 
+class FailingArtifactStore:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def put(self, *_args, **_kwargs):
+        raise self._error
+
+
 class MixedOwnershipArtifactRunner:
     def __init__(self, external_root: Path, service_child: Path) -> None:
         self._external_root = external_root
@@ -842,6 +854,71 @@ def test_terminal_write_persists_entire_aggregate_from_immutable_snapshot(
     assert runner.calls == 1
     assert staging_root.is_dir()
     assert not runner_staging.exists()
+
+
+@pytest.mark.parametrize(
+    "artifact_error",
+    [OSError("sentinel path"), ArtifactStoreError("sentinel path")],
+    ids=["os-error", "artifact-store-error"],
+)
+def test_artifact_persistence_failure_is_terminal_and_never_schedules_retry(
+    session_factory, tmp_path: Path, artifact_error: Exception
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "artifact-persistence-failure",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    staging_root = tmp_path / "runner-staging"
+    staging_root.mkdir()
+    runner_staging = staging_root / "attempt-output"
+    worker = RunWorker(
+        session_factory,
+        runners={"pytest": RichFailingRunner(runner_staging)},
+        artifact_store=FailingArtifactStore(artifact_error),
+        workspace_root=tmp_path / "workspaces",
+        staging_root=staging_root,
+        clock=lambda: datetime(2026, 8, 10, 2, 0, 3, tzinfo=UTC),
+    )
+
+    execution_result = None
+    try:
+        execution_result = worker.execute(run_id)
+    except (ArtifactStoreError, OSError) as error:
+        assert str(error) == "sentinel path"
+
+    with session_factory() as session:
+        run = session.scalar(
+            select(Run)
+            .where(Run.run_id == run_id)
+        )
+        retry_event_count = len(
+            session.scalars(
+                select(RunEvent).where(
+                    RunEvent.run_id == run_id,
+                    RunEvent.event_type == "run.retry_scheduled",
+                )
+            ).all()
+        )
+        retry_outbox_count = len(
+            session.scalars(
+                select(OutboxEvent).where(
+                    OutboxEvent.aggregate_id == run_id,
+                    OutboxEvent.event_type == "run.retry_scheduled",
+                )
+            ).all()
+        )
+
+        assert run.status is RunStatus.INFRA_FAILED
+        assert run.outcome is RunOutcome.UNKNOWN
+        assert run.attempts[0].status is AttemptStatus.INFRA_FAILED
+        assert "sentinel path" not in (run.attempts[0].failure_reason or "")
+        assert retry_event_count == 0
+        assert retry_outbox_count == 0
+    assert execution_result is True
 
 
 def test_real_terminal_commit_failure_rolls_back_entire_aggregate(

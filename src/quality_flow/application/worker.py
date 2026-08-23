@@ -11,7 +11,11 @@ from typing import Protocol
 from uuid import UUID
 
 from quality_flow.domain.enums import AttemptStatus, RunOutcome
-from quality_flow.infrastructure.artifacts import ArtifactMetadata, FileArtifactStore
+from quality_flow.infrastructure.artifacts import (
+    ArtifactMetadata,
+    ArtifactStoreError,
+    FileArtifactStore,
+)
 from quality_flow.infrastructure.database import SessionFactory, SqlAlchemyUnitOfWork
 from quality_flow.infrastructure.models import Run
 from quality_flow.runners.base import ExecutionSpec, RunnerOutcome
@@ -107,19 +111,23 @@ class RunWorker:
 
             outcome = _normalize_outcome(outcome)
             try:
-                stored_artifacts = tuple(
-                    self._artifact_store.put(
-                        artifact.source_path,
-                        ArtifactMetadata(
-                            run_id=claimed.run_id,
-                            attempt_id=claimed.attempt_id,
-                            artifact_type=artifact.artifact_type,
-                            mime_type=artifact.mime_type,
-                        ),
-                        attempt_workspace=artifact.source_root,
+                try:
+                    stored_artifacts = tuple(
+                        self._artifact_store.put(
+                            artifact.source_path,
+                            ArtifactMetadata(
+                                run_id=claimed.run_id,
+                                attempt_id=claimed.attempt_id,
+                                artifact_type=artifact.artifact_type,
+                                mime_type=artifact.mime_type,
+                            ),
+                            attempt_workspace=artifact.source_root,
+                        )
+                        for artifact in outcome.artifacts
                     )
-                    for artifact in outcome.artifacts
-                )
+                except (ArtifactStoreError, OSError):
+                    self._record_artifact_failure(lease)
+                    return True
                 persisted_outcome = _run_outcome(outcome)
                 with SqlAlchemyUnitOfWork(self._session_factory) as uow:
                     uow.runs.record_terminal_aggregate(
@@ -226,6 +234,29 @@ class RunWorker:
             gate_result=None,
             failure_kind="worker_setup",
             failure_summary=f"worker setup failed: {reason}",
+        )
+        with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+            uow.runs.record_terminal_aggregate(
+                lease.run_id,
+                lease.attempt_id,
+                lease.lease_token,
+                outcome,
+                RunOutcome.UNKNOWN,
+                (),
+                now=failed_at,
+            )
+            uow.commit()
+
+    def _record_artifact_failure(self, lease: ClaimedLease) -> None:
+        failed_at = self._clock()
+        outcome = RunnerOutcome(
+            attempt_status=AttemptStatus.INFRA_FAILED,
+            exit_code=None,
+            started_at=lease.started_at,
+            finished_at=failed_at,
+            gate_result=None,
+            failure_kind="artifact_store_failed",
+            failure_summary="artifact persistence failed",
         )
         with SqlAlchemyUnitOfWork(self._session_factory) as uow:
             uow.runs.record_terminal_aggregate(

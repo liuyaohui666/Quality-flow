@@ -51,18 +51,25 @@ class SqlAlchemyRunReader:
             if run is None:
                 return None
             attempt_ids = [attempt.attempt_id for attempt in run.attempts]
-            if attempt_ids:
+            latest_attempt_id = run.attempts[-1].attempt_id if run.attempts else None
+            if latest_attempt_id is not None:
                 run.case_results = list(
                     session.scalars(
-                        select(CaseResult).where(CaseResult.attempt_id.in_(attempt_ids))
+                        select(CaseResult).where(
+                            CaseResult.attempt_id == latest_attempt_id
+                        )
                     )
                 )
                 run.metrics = list(
-                    session.scalars(select(Metric).where(Metric.attempt_id.in_(attempt_ids)))
+                    session.scalars(
+                        select(Metric).where(Metric.attempt_id == latest_attempt_id)
+                    )
                 )
                 run.gates = list(
                     session.scalars(
-                        select(GateEvaluation).where(GateEvaluation.attempt_id.in_(attempt_ids))
+                        select(GateEvaluation).where(
+                            GateEvaluation.attempt_id == latest_attempt_id
+                        )
                     )
                 )
                 run.artifacts = list(

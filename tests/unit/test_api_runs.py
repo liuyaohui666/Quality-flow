@@ -8,12 +8,27 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from quality_flow.api import dependencies as dependency_module
 from quality_flow.api.app import create_app
-from quality_flow.api.dependencies import ApiDependencies, build_dependencies
+from quality_flow.api.dependencies import (
+    ApiDependencies,
+    SqlAlchemyRunReader,
+    build_dependencies,
+)
 from quality_flow.application.run_service import NewRun
-from quality_flow.domain.enums import RunOutcome, RunStatus
+from quality_flow.domain.enums import AttemptStatus, RunOutcome, RunStatus
+from quality_flow.infrastructure.models import (
+    Artifact,
+    Base,
+    CaseResult,
+    GateEvaluation,
+    Metric,
+    Run,
+    RunAttempt,
+)
 from quality_flow.suites.registry import InvalidSuiteParameter, UnknownSuiteError
 from quality_flow.suites.registry import SuiteRegistry
 
@@ -181,6 +196,99 @@ def test_artifact_contract_exposes_safe_metadata_without_uri_or_secrets() -> Non
     ]
     assert "private" not in response.text
     assert "super-secret" not in response.text
+
+
+def test_run_reader_uses_latest_attempt_results_but_keeps_all_artifacts() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    run_id = uuid4()
+    first_attempt_id = uuid4()
+    latest_attempt_id = uuid4()
+    now = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+
+    with session_factory.begin() as session:
+        session.add(
+            Run(
+                run_id=run_id,
+                suite_id="demo-api",
+                idempotency_key="latest-attempt-reader",
+                parameters={},
+                suite_snapshot={},
+                gate_policy_snapshot={},
+                status=RunStatus.COMPLETED,
+                outcome=RunOutcome.FAILED,
+                version=1,
+                created_at=now,
+                updated_at=now,
+                attempts=[
+                    RunAttempt(
+                        attempt_id=first_attempt_id,
+                        attempt_no=1,
+                        status=AttemptStatus.TEST_FAILED,
+                        created_at=now,
+                    ),
+                    RunAttempt(
+                        attempt_id=latest_attempt_id,
+                        attempt_no=2,
+                        status=AttemptStatus.TEST_FAILED,
+                        created_at=now,
+                    ),
+                ],
+            )
+        )
+        for attempt_id, label in (
+            (first_attempt_id, "first"),
+            (latest_attempt_id, "latest"),
+        ):
+            session.add_all(
+                [
+                    CaseResult(
+                        attempt_id=attempt_id,
+                        node_id=f"{label}::failed",
+                        status="failed",
+                        duration_ms=1.0,
+                        message=f"{label} failed",
+                        details={},
+                    ),
+                    Metric(
+                        attempt_id=attempt_id,
+                        metric_name=f"{label}_failures",
+                        metric_value=1.0,
+                        unit="count",
+                        details={},
+                    ),
+                    GateEvaluation(
+                        attempt_id=attempt_id,
+                        gate_type=f"{label}_gate",
+                        passed=False,
+                        reason_codes=[f"{label}_failure"],
+                        details={},
+                    ),
+                    Artifact(
+                        attempt_id=attempt_id,
+                        artifact_type="junit",
+                        uri=f"runs/{run_id}/{attempt_id}/{uuid4().hex}",
+                        checksum=label,
+                        artifact_metadata={"attempt_id": str(attempt_id)},
+                    ),
+                ]
+            )
+
+    run = SqlAlchemyRunReader(session_factory).get_run(run_id)
+
+    assert run is not None
+    assert [attempt.attempt_id for attempt in run.attempts] == [
+        first_attempt_id,
+        latest_attempt_id,
+    ]
+    assert {result.attempt_id for result in run.case_results} == {latest_attempt_id}
+    assert {metric.attempt_id for metric in run.metrics} == {latest_attempt_id}
+    assert {gate.attempt_id for gate in run.gates} == {latest_attempt_id}
+    assert {artifact.attempt_id for artifact in run.artifacts} == {
+        first_attempt_id,
+        latest_attempt_id,
+    }
 
 
 def test_events_artifacts_and_health_contracts(client: TestClient) -> None:
