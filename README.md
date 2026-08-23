@@ -188,8 +188,23 @@ docker compose -p quality-flow-demo logs --no-color
 - at-least-once：发布成功但标记失败时允许重投；不承诺 exactly-once 物理执行。
 - 条件领取：只有 `queued` Run 能生成第一份有效 Attempt；重复消息为 no-op。
 - 租约围栏：终态写入必须携带当前 lease token；过期/旧 Worker 不能覆盖新状态。
-- 故障收敛：Reconciler 将过期 Attempt 置为 abandoned，将 Run 置为 `infra_failed/unknown`，V1 不自动重试。
+- 故障收敛：Reconciler 将过期 Attempt 置为 abandoned；只有套件显式启用 `worker_lost` 策略且 Attempt 1 租约过期时，Run 才会重新排队一次，否则收敛为 `infra_failed/unknown`。
 - 终态原子性：case、metric、gate、Artifact 元数据、Attempt、Run 和 terminal event 在一个数据库事务中提交。
+
+### Controlled automatic retry
+
+Suites may opt into one retry for an expired Worker lease. PostgreSQL atomically
+marks Attempt 1 abandoned, returns the same Run to queued, records
+`run.retry_scheduled`, and creates a new Outbox event. Attempt 2 receives a new
+lease and the API preserves both Attempt records. Test failures, quality-gate
+failures, timeouts, configuration/result errors, and artifact failures are not
+retried. Restful Booker keeps this policy disabled because it writes to a shared
+external API.
+
+**Interview answer:** “The platform does not blindly rerun failed tests. It only
+retries a Worker-loss infrastructure failure once, keeps both Attempts, and uses
+PostgreSQL transactions, Run locking, and lease fencing to prevent duplicate
+effective execution and stale result overwrite.”
 
 ## 信任与安全边界
 
@@ -209,7 +224,7 @@ docker compose -p quality-flow-demo logs --no-color
 ## 已知限制
 
 - 无认证/RBAC、多租户和审批；
-- 无自动重试/取消、优先级和定时任务；
+- 不提供通用的自动重试/取消、优先级和定时任务；Worker 租约丢失只支持套件显式启用的一次受控重试；
 - 无高可用/灾备、跨主机 Worker 或 exactly-once 保证；
 - 无多节点压测，只允许对本地确定性靶场执行单用户 Locust 场景；
 - 无任意 Git 仓库接入和恶意代码沙箱；
@@ -218,7 +233,7 @@ docker compose -p quality-flow-demo logs --no-color
 - 无 Kubernetes 或生产部署证据；
 - 依赖按版本范围解析，镜像未按 digest/hash 锁定，不能声称 bit-for-bit reproducible。
 
-可演进方向包括对象存储、每 Attempt 容器、受控多 Worker、重试/取消、认证/RBAC、OpenTelemetry 和 Kubernetes Job；它们都不是 V1 已完成功能。
+可演进方向包括对象存储、每 Attempt 容器、受控多 Worker、更广泛的重试/取消策略、认证/RBAC、OpenTelemetry 和 Kubernetes Job；它们都不是 V1 已完成功能。
 
 ## 目录
 
