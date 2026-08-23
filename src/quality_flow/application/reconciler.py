@@ -66,7 +66,10 @@ class LeaseReconciler:
             with self._session_factory.begin() as session:
                 run = session.scalar(
                     select(Run)
-                    .where(Run.run_id == run_id)
+                    .where(
+                        Run.run_id == run_id,
+                        Run.status == RunStatus.RUNNING,
+                    )
                     .with_for_update(skip_locked=True)
                 )
                 if run is None:

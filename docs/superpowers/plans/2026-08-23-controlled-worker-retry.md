@@ -550,4 +550,3 @@ Expected: clean working tree with focused feature commits.
 Have a read-only reviewer verify policy scope, retry budget, Reconciler races,
 artifact failure handling, API aggregation, tests, and README claims. Fix any
 confirmed Critical or Important finding with a new RED test before final delivery.
-

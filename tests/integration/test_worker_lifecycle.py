@@ -17,7 +17,7 @@ from alembic.config import Config
 import psycopg
 from psycopg import sql
 from redis import Redis
-from sqlalchemy import create_engine, delete, inspect, select, update
+from sqlalchemy import create_engine, delete, inspect, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from quality_flow.application.dispatcher import OutboxDispatcher
 from quality_flow.application.reconciler import LeaseReconciler
 from quality_flow.application.run_service import RunService
-from quality_flow.application.worker import RunWorker
+from quality_flow.application.worker import RunWorker, _PostRunLeaseKeeper
 from quality_flow.domain.enums import AttemptStatus, RunOutcome, RunStatus
 from quality_flow.infrastructure.artifacts import (
     ArtifactMetadata,
@@ -214,6 +214,28 @@ class BlockingPassingRunner:
         )
 
 
+class BlockingPostprocessRunner:
+    """Model an adapter blocked after its subprocess exits but before parsing ends."""
+
+    def __init__(self, clock) -> None:
+        self._clock = clock
+        self.process_finished = Event()
+        self.release_postprocess = Event()
+
+    def run(self, spec, workspace, heartbeat):
+        heartbeat()
+        self.process_finished.set()
+        assert self.release_postprocess.wait(timeout=10)
+        finished_at = self._clock()
+        return RunnerOutcome(
+            attempt_status=AttemptStatus.PASSED,
+            exit_code=0,
+            started_at=finished_at - timedelta(milliseconds=100),
+            finished_at=finished_at,
+            gate_result=GateResult(True, (), {"pass_rate": 1.0}),
+        )
+
+
 def test_concurrent_duplicate_delivery_claims_exact_run_once_with_valid_lease(
     session_factory, tmp_path: Path
 ) -> None:
@@ -362,6 +384,176 @@ def test_concurrent_duplicate_retry_deliveries_claim_attempt_two_once(
         ).all()
         assert len(attempts) == 2
         assert attempts[1].status is AttemptStatus.PASSED
+
+
+def test_stale_reconciler_candidate_does_not_lock_a_requeued_run(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "stale-reconciler-candidate",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=claimed_at, lease_duration=timedelta(seconds=5)
+        )
+        reconcile_at = run.attempts[-1].lease_expires_at
+        uow.commit()
+
+    stale_before_run_lock = Event()
+    release_stale_run_query = Event()
+    stale_locked_requeued_run = Event()
+
+    class StaleCandidateSession(Session):
+        def scalar(self, statement, *args, **kwargs):
+            rendered = str(statement)
+            if "FROM runs" in rendered and "FOR UPDATE" in rendered:
+                stale_before_run_lock.set()
+                assert release_stale_run_query.wait(timeout=10)
+                selected = super().scalar(statement, *args, **kwargs)
+                if selected is not None and selected.status is RunStatus.QUEUED:
+                    stale_locked_requeued_run.set()
+                return selected
+            return super().scalar(statement, *args, **kwargs)
+
+    stale_factory = sessionmaker(
+        bind=session_factory.kw["bind"],
+        class_=StaleCandidateSession,
+        expire_on_commit=False,
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        stale_reconcile = executor.submit(
+            LeaseReconciler(stale_factory).reconcile_once,
+            now=reconcile_at,
+        )
+        assert stale_before_run_lock.wait(timeout=10)
+        assert LeaseReconciler(session_factory).reconcile_once(now=reconcile_at) == 1
+        release_stale_run_query.set()
+        assert stale_reconcile.result(timeout=10) == 0
+
+    assert stale_locked_requeued_run.is_set() is False
+
+
+def test_only_published_retry_delivery_waits_for_run_lock_and_claims_attempt_two(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "suite.py").write_text("# immutable source\n", encoding="utf-8")
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "published-retry-delivery",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    first_claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=first_claimed_at, lease_duration=timedelta(seconds=5)
+        )
+        first_expiry = run.attempts[-1].lease_expires_at
+        uow.commit()
+    assert LeaseReconciler(session_factory).reconcile_once(now=first_expiry) == 1
+
+    published_messages: list[tuple[object, object]] = []
+
+    def publish(*, event_id, run_id) -> None:
+        published_messages.append((event_id, run_id))
+
+    published_at = first_expiry + timedelta(milliseconds=100)
+    assert OutboxDispatcher(
+        SqlAlchemyOutboxStore(session_factory),
+        publish,
+        clock=lambda: published_at,
+    ).dispatch_once() == 1
+
+    claim_query_started = Event()
+    claim_query_returned = Event()
+
+    class SignalingClaimSession(Session):
+        def scalar(self, statement, *args, **kwargs):
+            rendered = str(statement)
+            if "FROM runs" in rendered and "FOR UPDATE" in rendered:
+                claim_query_started.set()
+                selected = super().scalar(statement, *args, **kwargs)
+                claim_query_returned.set()
+                return selected
+            return super().scalar(statement, *args, **kwargs)
+
+    delivery_factory = sessionmaker(
+        bind=session_factory.kw["bind"],
+        class_=SignalingClaimSession,
+        expire_on_commit=False,
+    )
+    delivered_at = first_expiry + timedelta(seconds=1)
+    runner = BlockingPassingRunner(
+        finished_at=delivered_at + timedelta(seconds=1)
+    )
+    runner.release.set()
+    worker = RunWorker(
+        delivery_factory,
+        runners={"pytest": runner},
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
+        workspace_root=tmp_path / "workspaces",
+        staging_root=tmp_path / "staging",
+        lease_duration=timedelta(seconds=30),
+        clock=lambda: delivered_at,
+    )
+
+    lock_session = session_factory()
+    delivery_result = None
+    returned_while_locked = None
+    try:
+        lock_session.begin()
+        locked = lock_session.scalar(
+            select(Run).where(Run.run_id == run_id).with_for_update()
+        )
+        assert locked.status is RunStatus.QUEUED
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            delivery = executor.submit(
+                worker.execute,
+                run_id,
+                worker_id="only-published-retry-delivery",
+            )
+            assert claim_query_started.wait(timeout=10)
+            returned_while_locked = claim_query_returned.wait(timeout=0.5)
+            lock_session.commit()
+            delivery_result = delivery.result(timeout=10)
+    finally:
+        if lock_session.in_transaction():
+            lock_session.rollback()
+        lock_session.close()
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempts = session.scalars(
+            select(RunAttempt)
+            .where(RunAttempt.run_id == run_id)
+            .order_by(RunAttempt.attempt_no)
+        ).all()
+        retry_outbox = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == run_id,
+                OutboxEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+
+        assert returned_while_locked is False
+        assert delivery_result is True
+        assert run.status is RunStatus.COMPLETED
+        assert [attempt.status for attempt in attempts] == [
+            AttemptStatus.ABANDONED,
+            AttemptStatus.PASSED,
+        ]
+        assert len(retry_outbox) == 1
+        assert retry_outbox[0].published_at == published_at
+        assert published_messages == [(retry_outbox[0].outbox_event_id, run_id)]
 
 
 def test_worker_terminalizes_attempt_workspace_root_overlapping_suite_source(
@@ -649,6 +841,181 @@ def test_heartbeat_is_fenced_by_running_status_token_and_unexpired_lease(
                 now=claimed_at + timedelta(seconds=10),
                 lease_duration=timedelta(seconds=30),
             )
+
+
+def test_worker_keeps_short_lease_during_runner_postprocess(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "suite.py").write_text("# immutable source\n", encoding="utf-8")
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "runner-postprocess-lease",
+        retry_policy={"max_attempts": 2, "retry_on": ["worker_lost"]},
+    )
+    initial_time = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    clock = MutableClock(initial_time)
+    runner = BlockingPostprocessRunner(clock)
+    worker = RunWorker(
+        session_factory,
+        runners={"pytest": runner},
+        artifact_store=FileArtifactStore(tmp_path / "artifacts"),
+        workspace_root=tmp_path / "workspaces",
+        staging_root=tmp_path / "staging",
+        lease_duration=timedelta(milliseconds=300),
+        clock=clock,
+    )
+
+    heartbeat_extended = False
+    execution_result = None
+    execution_error = None
+    reconciled = None
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        execution = executor.submit(worker.execute, run_id)
+        assert runner.process_finished.wait(timeout=10)
+        heartbeat_time = initial_time + timedelta(milliseconds=200)
+        clock.set(heartbeat_time)
+        heartbeat_deadline = time.monotonic() + 2
+        while time.monotonic() < heartbeat_deadline:
+            with session_factory() as session:
+                attempt = session.scalar(
+                    select(RunAttempt).where(RunAttempt.run_id == run_id)
+                )
+                if (
+                    attempt.heartbeat_at == heartbeat_time
+                    and attempt.lease_expires_at
+                    == heartbeat_time + timedelta(milliseconds=300)
+                ):
+                    heartbeat_extended = True
+                    break
+            time.sleep(0.01)
+
+        reconciled_at = initial_time + timedelta(milliseconds=400)
+        clock.set(reconciled_at)
+        reconciled = LeaseReconciler(session_factory).reconcile_once(
+            now=reconciled_at
+        )
+        runner.release_postprocess.set()
+        try:
+            execution_result = execution.result(timeout=10)
+        except BaseException as error:
+            execution_error = error
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempts = session.scalars(
+            select(RunAttempt)
+            .where(RunAttempt.run_id == run_id)
+            .order_by(RunAttempt.attempt_no)
+        ).all()
+        retry_events = session.scalars(
+            select(RunEvent).where(
+                RunEvent.run_id == run_id,
+                RunEvent.event_type == "run.retry_scheduled",
+            )
+        ).all()
+
+        assert heartbeat_extended is True
+        assert reconciled == 0
+        assert execution_error is None
+        assert execution_result is True
+        assert run.status is RunStatus.COMPLETED
+        assert [attempt.status for attempt in attempts] == [AttemptStatus.PASSED]
+        assert retry_events == []
+
+
+def test_terminal_run_lock_is_released_while_keeper_heartbeat_is_blocked(
+    session_factory, tmp_path: Path
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "terminal-bounded-keeper-stop",
+    )
+    claimed_at = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    with SqlAlchemyUnitOfWork(session_factory) as uow:
+        run = uow.runs.claim_queued_run(
+            run_id, now=claimed_at, lease_duration=timedelta(seconds=30)
+        )
+        attempt_id = run.attempts[-1].attempt_id
+        lease_token = run.attempts[-1].lease_token
+        uow.commit()
+
+    callback_started = Event()
+    release_callback = Event()
+    count_lock = Lock()
+    call_count = 0
+
+    def heartbeat() -> None:
+        nonlocal call_count
+        with count_lock:
+            call_count += 1
+            current_call = call_count
+        if current_call > 1:
+            callback_started.set()
+            release_callback.wait()
+
+    keeper = _PostRunLeaseKeeper(
+        heartbeat,
+        interval_seconds=0.01,
+        thread_name="test-terminal-bounded-keeper-stop",
+    )
+    keeper.__enter__()
+    assert callback_started.wait(timeout=1)
+
+    terminal = RunnerOutcome(
+        attempt_status=AttemptStatus.PASSED,
+        exit_code=0,
+        started_at=claimed_at,
+        finished_at=claimed_at + timedelta(seconds=1),
+        gate_result=GateResult(True, (), {}),
+    )
+    run_locked = Event()
+
+    def stop_after_run_lock() -> None:
+        run_locked.set()
+        keeper.stop()
+
+    def finalize() -> None:
+        with SqlAlchemyUnitOfWork(session_factory) as uow:
+            uow.runs.record_terminal_aggregate(
+                run_id,
+                attempt_id,
+                lease_token,
+                terminal,
+                RunOutcome.PASSED,
+                (),
+                now=claimed_at + timedelta(seconds=2),
+                on_run_locked=stop_after_run_lock,
+            )
+            uow.commit()
+
+    lock_error = None
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        final_write = executor.submit(finalize)
+        assert run_locked.wait(timeout=10)
+        try:
+            with session_factory.begin() as session:
+                session.execute(text("SET LOCAL lock_timeout = '300ms'"))
+                session.scalar(
+                    select(Run).where(Run.run_id == run_id).with_for_update()
+                )
+        except BaseException as error:
+            lock_error = error
+        finally:
+            release_callback.set()
+            final_write.result(timeout=10)
+
+    with session_factory() as session:
+        run = session.get(Run, run_id)
+        attempt = session.get(RunAttempt, attempt_id)
+        assert lock_error is None
+        assert run.status is RunStatus.COMPLETED
+        assert attempt.status is AttemptStatus.PASSED
 
 
 class RichFailingRunner:
@@ -1075,7 +1442,7 @@ def test_blocked_artifact_failure_crossing_lease_stays_terminal_without_retry(
     assert execution_result is True
     assert reconciled == 0
     assert not any(
-        thread.name.startswith("quality-flow-post-run-heartbeat-")
+        thread.name.startswith("quality-flow-lease-keeper-")
         for thread in enumerate_threads()
     )
     assert staging_root.is_dir()

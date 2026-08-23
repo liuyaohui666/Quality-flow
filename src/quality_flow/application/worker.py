@@ -8,10 +8,14 @@ from datetime import UTC, datetime, timedelta
 import logging
 from pathlib import Path
 import shutil
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, current_thread
 from typing import Protocol
 from uuid import UUID
 
+from quality_flow._bounded_callback import (
+    BOUNDED_CALLBACK_DISPATCHER,
+    BoundedCallbackCall,
+)
 from quality_flow.domain.enums import AttemptStatus, RunOutcome
 from quality_flow.infrastructure.artifacts import (
     ArtifactMetadata,
@@ -68,7 +72,10 @@ class ClaimedExecution:
 
 
 class _PostRunLeaseKeeper:
-    """Keep a claimed lease live until the terminal transaction fences its Run."""
+    """Keep a claimed lease live without running heartbeats on its scheduler."""
+
+    _CALL_POLL_SECONDS = 0.01
+    _STOP_JOIN_SECONDS = 0.05
 
     def __init__(
         self,
@@ -79,15 +86,15 @@ class _PostRunLeaseKeeper:
     ) -> None:
         self._heartbeat = heartbeat
         self._interval_seconds = interval_seconds
-        self._thread = Thread(target=self._run, name=thread_name)
+        self._thread = Thread(target=self._run, name=thread_name, daemon=True)
         self._stop = Event()
-        self._heartbeat_lock = Lock()
+        self._state_lock = Lock()
         self._error_lock = Lock()
         self._error: BaseException | None = None
+        self._active_call: BoundedCallbackCall | None = None
         self._started = False
 
     def __enter__(self) -> _PostRunLeaseKeeper:
-        self._heartbeat()
         self._thread.start()
         self._started = True
         return self
@@ -100,26 +107,43 @@ class _PostRunLeaseKeeper:
     ) -> bool:
         try:
             self.stop()
-        except BaseException as heartbeat_error:
-            if heartbeat_error is error:
-                return False
+        except BaseException:
             if error is not None:
-                raise heartbeat_error from error
+                return False
             raise
         return False
 
     def _run(self) -> None:
-        while not self._stop.wait(self._interval_seconds):
-            with self._heartbeat_lock:
+        while not self._stop.is_set():
+            with self._state_lock:
                 if self._stop.is_set():
                     return
-                try:
-                    self._heartbeat()
-                except BaseException as error:
-                    with self._error_lock:
-                        self._error = error
-                    self._stop.set()
+                call = BOUNDED_CALLBACK_DISPATCHER.submit(self._heartbeat)
+                self._active_call = call
+
+            while not call.done.wait(self._CALL_POLL_SECONDS):
+                if self._stop.is_set():
+                    call.cancel()
+                    self._detach(call)
                     return
+
+            self._detach(call)
+            if call.error is not None:
+                self._remember_error(call.error)
+                self._stop.set()
+                return
+            if self._stop.wait(self._interval_seconds):
+                return
+
+    def _detach(self, call: BoundedCallbackCall) -> None:
+        with self._state_lock:
+            if self._active_call is call:
+                self._active_call = None
+
+    def _remember_error(self, error: BaseException) -> None:
+        with self._error_lock:
+            if self._error is None:
+                self._error = error
 
     def raise_if_failed(self) -> None:
         with self._error_lock:
@@ -128,10 +152,17 @@ class _PostRunLeaseKeeper:
             raise error
 
     def stop(self) -> None:
-        with self._heartbeat_lock:
-            self._stop.set()
-        if self._started:
-            self._thread.join()
+        self._stop.set()
+        with self._state_lock:
+            call = self._active_call
+            self._active_call = None
+        completed_error = call.cancel() if call is not None else None
+        if completed_error is not None:
+            self._remember_error(completed_error)
+        if self._started and self._thread is not current_thread():
+            self._thread.join(timeout=self._STOP_JOIN_SECONDS)
+        if call is not None and call.done.is_set() and call.error is not None:
+            self._remember_error(call.error)
         self.raise_if_failed()
 
 
@@ -160,43 +191,45 @@ class RunWorker:
         if lease is None:
             return False
 
-        try:
-            try:
-                claimed, runner, workspace, spec = self._prepare_execution(lease)
-            except WorkerSetupError as error:
-                self._record_setup_failure(lease, str(error))
-                return True
-
-            def heartbeat() -> None:
-                with SqlAlchemyUnitOfWork(self._session_factory) as uow:
-                    uow.runs.heartbeat(
-                        claimed.attempt_id,
-                        claimed.lease_token,
-                        now=self._clock(),
-                        lease_duration=self._lease_duration,
-                    )
-                    uow.commit()
-
-            try:
-                outcome = runner.run(spec, workspace, heartbeat)
-            except RunnerConfigurationError as error:
-                self._record_setup_failure(lease, f"runner setup: {error}")
-                return True
-
-            outcome = _normalize_outcome(outcome)
-            try:
-                stored_artifacts: list[StoredArtifact] = []
-                heartbeat_interval = max(
-                    self._lease_duration.total_seconds() / 3,
-                    0.001,
+        def heartbeat() -> None:
+            with SqlAlchemyUnitOfWork(self._session_factory) as uow:
+                uow.runs.heartbeat(
+                    lease.attempt_id,
+                    lease.lease_token,
+                    now=self._clock(),
+                    lease_duration=self._lease_duration,
                 )
-                with _PostRunLeaseKeeper(
-                    heartbeat,
-                    interval_seconds=heartbeat_interval,
-                    thread_name=(
-                        f"quality-flow-post-run-heartbeat-{claimed.attempt_id}"
-                    ),
-                ) as lease_keeper:
+                uow.commit()
+
+        heartbeat_interval = max(
+            self._lease_duration.total_seconds() / 3,
+            0.001,
+        )
+        try:
+            with _PostRunLeaseKeeper(
+                heartbeat,
+                interval_seconds=heartbeat_interval,
+                thread_name=f"quality-flow-lease-keeper-{lease.attempt_id}",
+            ) as lease_keeper:
+                try:
+                    claimed, runner, workspace, spec = self._prepare_execution(lease)
+                except WorkerSetupError as error:
+                    self._record_setup_failure(lease, str(error), lease_keeper)
+                    return True
+
+                try:
+                    outcome = runner.run(spec, workspace, heartbeat)
+                except RunnerConfigurationError as error:
+                    self._record_setup_failure(
+                        lease,
+                        f"runner setup: {error}",
+                        lease_keeper,
+                    )
+                    return True
+
+                outcome = _normalize_outcome(outcome)
+                try:
+                    stored_artifacts: list[StoredArtifact] = []
                     try:
                         for artifact in outcome.artifacts:
                             stored_artifacts.append(
@@ -234,8 +267,8 @@ class RunWorker:
                         )
                         uow.commit()
                     return True
-            finally:
-                _cleanup_staging_roots(outcome, self._staging_root)
+                finally:
+                    _cleanup_staging_roots(outcome, self._staging_root)
         finally:
             _cleanup_attempt_workspace(lease, self._workspace_root)
 
@@ -317,7 +350,12 @@ class RunWorker:
             ) from error
         return claimed, runner, workspace, spec
 
-    def _record_setup_failure(self, lease: ClaimedLease, reason: str) -> None:
+    def _record_setup_failure(
+        self,
+        lease: ClaimedLease,
+        reason: str,
+        lease_keeper: _PostRunLeaseKeeper,
+    ) -> None:
         failed_at = self._clock()
         outcome = RunnerOutcome(
             attempt_status=AttemptStatus.INFRA_FAILED,
@@ -337,6 +375,7 @@ class RunWorker:
                 RunOutcome.UNKNOWN,
                 (),
                 now=failed_at,
+                on_run_locked=lease_keeper.stop,
             )
             uow.commit()
 

@@ -55,7 +55,7 @@ class RunRepository:
         run = self._session.scalar(
             select(Run)
             .where(Run.run_id == run_id, Run.status == RunStatus.QUEUED)
-            .with_for_update(skip_locked=True)
+            .with_for_update()
             .options(selectinload(Run.attempts))
         )
         if run is None:
