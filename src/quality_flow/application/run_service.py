@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -64,6 +65,9 @@ class RunUnitOfWork(Protocol):
     def commit(self) -> None: ...
 
 
+RunUnitOfWorkFactory = Callable[[], RunUnitOfWork]
+
+
 class DuplicateIdempotencyKeyError(RuntimeError):
     """Signal that another transaction won an idempotency-key race."""
 
@@ -71,8 +75,12 @@ class DuplicateIdempotencyKeyError(RuntimeError):
 class RunService:
     """Create validated runs behind an idempotent transactional boundary."""
 
-    def __init__(self, uow: RunUnitOfWork, registry: SuiteRegistry) -> None:
-        self._uow = uow
+    def __init__(
+        self,
+        uow_factory: RunUnitOfWorkFactory,
+        registry: SuiteRegistry,
+    ) -> None:
+        self._uow_factory = uow_factory
         self._registry = registry
 
     def create_run(
@@ -88,7 +96,7 @@ class RunService:
         resolved_parameters = suite.resolve_parameters(parameters)
         created_at = datetime.now(UTC)
 
-        with self._uow as uow:
+        with self._uow_factory() as uow:
             existing = uow.runs.get_by_idempotency_key(idempotency_key)
             if existing is not None:
                 return existing
