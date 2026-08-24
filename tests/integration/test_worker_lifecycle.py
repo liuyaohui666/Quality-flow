@@ -95,9 +95,9 @@ def registry() -> SuiteRegistry:
 def test_real_postgres_dispatch_marks_only_after_publish_returns(
     session_factory, registry: SuiteRegistry
 ) -> None:
-    created = RunService(SqlAlchemyUnitOfWork(session_factory), registry).create_run(
-        "demo-api", "dispatch-real-postgres", {"scenario": "ok"}
-    )
+    created = RunService(
+        lambda: SqlAlchemyUnitOfWork(session_factory), registry
+    ).create_run("demo-api", "dispatch-real-postgres", {"scenario": "ok"})
     store = SqlAlchemyOutboxStore(session_factory)
     observed = []
 
@@ -127,9 +127,9 @@ def test_real_postgres_dispatch_marks_only_after_publish_returns(
 def test_real_postgres_publish_failure_keeps_outbox_pending_and_counted(
     session_factory, registry: SuiteRegistry
 ) -> None:
-    created = RunService(SqlAlchemyUnitOfWork(session_factory), registry).create_run(
-        "demo-api", "dispatch-real-failure", {"scenario": "ok"}
-    )
+    created = RunService(
+        lambda: SqlAlchemyUnitOfWork(session_factory), registry
+    ).create_run("demo-api", "dispatch-real-failure", {"scenario": "ok"})
 
     def fail_publish(*, event_id, run_id) -> None:
         raise ConnectionError("isolated broker failure")

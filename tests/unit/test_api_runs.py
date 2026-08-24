@@ -20,6 +20,7 @@ from quality_flow.api.dependencies import (
 )
 from quality_flow.application.run_service import NewRun
 from quality_flow.domain.enums import AttemptStatus, RunOutcome, RunStatus
+from quality_flow.infrastructure.database import SqlAlchemyUnitOfWork
 from quality_flow.infrastructure.models import (
     Artifact,
     Base,
@@ -85,6 +86,34 @@ def client() -> TestClient:
         readiness_check=lambda: None,
     )
     return TestClient(create_app(dependencies))
+
+
+def test_dependency_builder_supplies_fresh_uow_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class CapturingRunService:
+        def __init__(self, uow_factory: Any, _registry: Any) -> None:
+            captured["uow_factory"] = uow_factory
+
+    fake_session_factory = object()
+    monkeypatch.setattr(dependency_module, "RunService", CapturingRunService)
+    monkeypatch.setattr(dependency_module, "make_engine", lambda _url: object())
+    monkeypatch.setattr(
+        dependency_module,
+        "make_session_factory",
+        lambda _engine: fake_session_factory,
+    )
+
+    build_dependencies()
+
+    factory = captured["uow_factory"]
+    first = factory()
+    second = factory()
+    assert isinstance(first, SqlAlchemyUnitOfWork)
+    assert isinstance(second, SqlAlchemyUnitOfWork)
+    assert first is not second
 
 
 def test_submit_registered_suite_returns_202_and_duplicate_key_returns_same_run(

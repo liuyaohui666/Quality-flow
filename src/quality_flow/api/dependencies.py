@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 import os
 from pathlib import Path
 from typing import Any, Protocol
@@ -118,7 +119,10 @@ def build_dependencies(project_root: Path | None = None) -> ApiDependencies:
             raise RuntimeError("suite registry is unavailable")
 
     return ApiDependencies(
-        run_service=RunService(SqlAlchemyUnitOfWork(session_factory), registry),
+        run_service=RunService(
+            partial(SqlAlchemyUnitOfWork, session_factory),
+            registry,
+        ),
         run_reader=SqlAlchemyRunReader(session_factory),
         readiness_check=check_readiness,
     )
