@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>QualityFlow Console</title>
+  <link rel="stylesheet" href="/ui/assets/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">QF</span>
+        <span><strong>QualityFlow</strong><small>Test control plane</small></span>
+      </div>
+      <nav class="nav-list">
+        <button class="nav-item is-active" data-view="runs" type="button">
+          <span aria-hidden="true">▤</span><span>运行记录</span>
+        </button>
+        <button class="nav-item" data-view="create" type="button">
+          <span aria-hidden="true">＋</span><span>创建测试</span>
+        </button>
+        <button class="nav-item" data-view="health" type="button">
+          <span aria-hidden="true">◉</span><span>服务状态</span>
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <span id="connection-dot" class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-label">正在检查平台</span>
+      </div>
+    </aside>
+
+    <main id="main-content" class="main-content" tabindex="-1">
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+      <section id="view-runs" class="view is-visible" aria-labelledby="runs-title">
+        <header class="page-header">
+          <div>
+            <p class="eyebrow">Execution history</p>
+            <h1 id="runs-title">运行记录</h1>
+            <p>查看最近测试任务，并进入每次 Run 的完整证据链。</p>
+          </div>
+          <button id="open-create" class="button button-primary" type="button">创建测试</button>
+        </header>
+
+        <div class="toolbar" aria-label="运行记录筛选">
+          <label>状态
+            <select id="status-filter">
+              <option value="">全部状态</option>
+              <option value="queued">queued</option>
+              <option value="running">running</option>
+              <option value="completed">completed</option>
+              <option value="infra_failed">infra_failed</option>
+              <option value="timed_out">timed_out</option>
+            </select>
+          </label>
+          <label>测试套件
+            <select id="suite-filter"><option value="">全部套件</option></select>
+          </label>
+          <button id="refresh-runs" class="button button-secondary" type="button">刷新</button>
+        </div>
+
+        <div id="runs-state" class="state-panel" aria-live="polite">正在加载运行记录…</div>
+        <div id="runs-table-wrap" class="table-wrap" hidden>
+          <table>
+            <thead><tr><th>测试套件</th><th>状态</th><th>结果</th><th>Attempt</th><th>创建时间</th><th><span class="sr-only">操作</span></th></tr></thead>
+            <tbody id="runs-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="view-create" class="view" aria-labelledby="create-title">
+        <header class="page-header compact">
+          <div>
+            <p class="eyebrow">New execution</p>
+            <h1 id="create-title">创建测试</h1>
+            <p>只需选择已注册套件和允许的参数，平台会在后台完成调度与执行。</p>
+          </div>
+        </header>
+        <form id="create-form" class="panel form-panel">
+          <label for="suite-select">测试套件</label>
+          <select id="suite-select" required><option value="">请选择套件</option></select>
+          <p id="suite-hint" class="field-hint">套件命令和内部路径不会暴露给页面。</p>
+          <div id="parameter-fields" class="parameter-grid"></div>
+          <div id="form-error" class="inline-error" role="alert" hidden></div>
+          <div class="form-actions">
+            <button class="button button-secondary" data-view-target="runs" type="button">返回</button>
+            <button id="submit-run" class="button button-primary" type="submit">提交 Run</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="view-detail" class="view" aria-labelledby="detail-title">
+        <button class="back-button" data-view-target="runs" type="button">← 返回运行记录</button>
+        <div id="detail-state" class="state-panel" aria-live="polite">正在加载 Run…</div>
+        <div id="detail-content" hidden>
+          <header class="detail-header">
+            <div><p id="detail-id" class="mono muted"></p><h1 id="detail-title">Run 详情</h1></div>
+            <button id="refresh-detail" class="button button-secondary" type="button">刷新</button>
+          </header>
+          <div id="summary-grid" class="summary-grid"></div>
+          <div class="detail-grid">
+            <section class="panel wide"><div class="panel-heading"><h2>测试用例</h2><span id="case-count" class="muted"></span></div><div id="cases-content"></div></section>
+            <section class="panel"><div class="panel-heading"><h2>质量门禁</h2></div><div id="gates-content"></div></section>
+            <section class="panel"><div class="panel-heading"><h2>性能指标</h2></div><div id="metrics-content"></div></section>
+            <section class="panel"><div class="panel-heading"><h2>执行时间线</h2></div><ol id="events-content" class="timeline"></ol></section>
+            <section class="panel"><div class="panel-heading"><h2>结果文件</h2></div><div id="artifacts-content"></div></section>
+            <section class="panel wide"><div class="panel-heading"><h2>Attempt 记录</h2></div><div id="attempts-content"></div></section>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-health" class="view" aria-labelledby="health-title">
+        <header class="page-header compact"><div><p class="eyebrow">Platform readiness</p><h1 id="health-title">服务状态</h1><p>这里只展示控制面的实时可用性，不暴露数据库和 Redis 凭据。</p></div></header>
+        <div class="health-grid">
+          <article class="panel"><h2>存活检查</h2><p id="live-status" class="health-value">检查中…</p><small>/health/live</small></article>
+          <article class="panel"><h2>就绪检查</h2><p id="ready-status" class="health-value">检查中…</p><small>/health/ready</small></article>
+        </div>
+        <button id="refresh-health" class="button button-secondary" type="button">重新检查</button>
+      </section>
+    </main>
+  </div>
+  <script src="/ui/assets/app.js" defer></script>
+</body>
+</html>

@@ -250,3 +250,18 @@ def test_artifact_from_another_run_is_hidden(tmp_path: Path) -> None:
     assert response.status_code == 404
     assert store.resolved_uris == []
     assert "runtime" not in response.text
+
+
+def test_ui_shell_and_assets_are_served() -> None:
+    client = _client()
+
+    root = client.get("/", follow_redirects=False)
+    page = client.get("/ui/")
+    stylesheet = client.get("/ui/assets/styles.css")
+    script = client.get("/ui/assets/app.js")
+
+    assert root.status_code == 307
+    assert root.headers["location"] == "/ui/"
+    assert page.status_code == stylesheet.status_code == script.status_code == 200
+    assert "QualityFlow" in page.text
+    assert "createRun" in script.text
