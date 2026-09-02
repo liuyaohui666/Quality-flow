@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import tomllib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -265,3 +266,14 @@ def test_ui_shell_and_assets_are_served() -> None:
     assert page.status_code == stylesheet.status_code == script.status_code == 200
     assert "QualityFlow" in page.text
     assert "createRun" in script.text
+
+
+def test_ui_assets_are_included_in_the_installed_python_package() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    pyproject = tomllib.loads(
+        (project_root / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert pyproject["tool"]["setuptools"]["package-data"]["quality_flow"] == [
+        "api/static/*"
+    ]
