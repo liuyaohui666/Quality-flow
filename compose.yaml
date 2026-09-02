@@ -70,6 +70,8 @@ services:
       - "8000"
     ports:
       - "127.0.0.1:${QUALITY_FLOW_API_PORT:-18000}:8000"
+    volumes:
+      - quality-flow-artifacts:/runtime/artifacts:ro
     depends_on:
       postgres:
         condition: service_healthy

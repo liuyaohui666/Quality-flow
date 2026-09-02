@@ -4,6 +4,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse
 
 from quality_flow.api.dependencies import ApiDependencies
 from quality_flow.api.schemas import (
@@ -20,6 +21,7 @@ from quality_flow.api.schemas import (
     run_response,
 )
 from quality_flow.domain.enums import RunStatus
+from quality_flow.infrastructure.artifacts import ArtifactStoreError
 from quality_flow.suites.registry import InvalidSuiteParameter, UnknownSuiteError
 
 
@@ -101,4 +103,44 @@ def get_events(run_id: UUID, request: Request) -> EventsResponse:
 def get_artifacts(run_id: UUID, request: Request) -> ArtifactsResponse:
     return ArtifactsResponse(
         artifacts=artifact_responses(_read_run(run_id, _dependencies(request)))
+    )
+
+
+_ARTIFACT_FILENAMES = {
+    "stdout": "stdout.log",
+    "stderr": "stderr.log",
+    "junit_xml": "junit.xml",
+    "locust_stats": "locust_stats.csv",
+}
+
+
+@router.get("/{run_id}/artifacts/{artifact_id}/content")
+def get_artifact_content(
+    run_id: UUID,
+    artifact_id: UUID,
+    request: Request,
+    download: bool = False,
+) -> FileResponse:
+    dependencies = _dependencies(request)
+    run = _read_run(run_id, dependencies)
+    artifact = next(
+        (
+            candidate
+            for candidate in getattr(run, "artifacts", [])
+            if candidate.artifact_id == artifact_id
+        ),
+        None,
+    )
+    if artifact is None or dependencies.artifact_store is None:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    try:
+        path = dependencies.artifact_store.resolve(artifact.uri)
+    except (ArtifactStoreError, OSError):
+        raise HTTPException(status_code=404, detail="artifact not found") from None
+    return FileResponse(
+        path,
+        media_type=artifact.artifact_metadata.get("mime_type")
+        or "application/octet-stream",
+        filename=_ARTIFACT_FILENAMES.get(artifact.artifact_type, "artifact.bin"),
+        content_disposition_type="attachment" if download else "inline",
     )

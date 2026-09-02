@@ -15,6 +15,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from quality_flow.application.run_service import RunService
+from quality_flow.infrastructure.artifacts import FileArtifactStore
 from quality_flow.infrastructure.config import Settings
 from quality_flow.infrastructure.database import (
     SessionFactory,
@@ -121,6 +122,7 @@ class ApiDependencies:
     run_reader: RunReader
     readiness_check: Callable[[], None]
     suite_definitions: tuple[SuiteDefinition, ...] = ()
+    artifact_store: FileArtifactStore | None = None
 
 
 def build_dependencies(project_root: Path | None = None) -> ApiDependencies:
@@ -137,6 +139,9 @@ def build_dependencies(project_root: Path | None = None) -> ApiDependencies:
         os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
         socket_connect_timeout=2.0,
         socket_timeout=2.0,
+    )
+    artifact_store = FileArtifactStore(
+        Path(os.environ.get("QUALITY_FLOW_ARTIFACT_ROOT", root / "artifacts"))
     )
 
     def check_readiness() -> None:
@@ -155,4 +160,5 @@ def build_dependencies(project_root: Path | None = None) -> ApiDependencies:
         run_reader=SqlAlchemyRunReader(session_factory),
         readiness_check=check_readiness,
         suite_definitions=registry.all(),
+        artifact_store=artifact_store,
     )

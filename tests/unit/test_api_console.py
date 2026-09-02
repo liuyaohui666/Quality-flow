@@ -121,13 +121,15 @@ class ConsoleRunReader:
         return next((run for run in self.runs if run.run_id == run_id), None)
 
 
-def _console_client(reader: ConsoleRunReader) -> TestClient:
+def _console_client(
+    reader: ConsoleRunReader, artifact_store: object | None = None
+) -> TestClient:
     dependencies = SimpleNamespace(
         run_service=SimpleNamespace(),
         run_reader=reader,
         readiness_check=lambda: None,
         suite_definitions=(_suite(),),
-        artifact_store=None,
+        artifact_store=artifact_store,
     )
     return TestClient(create_app(dependencies))
 
@@ -183,3 +185,68 @@ def test_cases_expose_latest_attempt_without_arbitrary_details() -> None:
         }
     ]
     assert "private" not in response.text
+
+
+class FakeArtifactStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.resolved_uris: list[str] = []
+
+    def resolve(self, uri: str) -> Path:
+        self.resolved_uris.append(uri)
+        return self.path
+
+
+def test_artifact_content_uses_database_owned_uri(tmp_path: Path) -> None:
+    run = _run()
+    artifact_id = uuid4()
+    artifact_path = tmp_path / "captured.log"
+    artifact_path.write_bytes(b"captured output\n")
+    run.artifacts = [
+        SimpleNamespace(
+            artifact_id=artifact_id,
+            attempt_id=run.attempts[0].attempt_id,
+            artifact_type="stdout",
+            uri=f"runs/{run.run_id}/{run.attempts[0].attempt_id}/{uuid4().hex}",
+            artifact_metadata={"mime_type": "text/plain", "size_bytes": 16},
+        )
+    ]
+    store = FakeArtifactStore(artifact_path)
+    client = _console_client(ConsoleRunReader([run]), store)
+
+    inline = client.get(
+        f"/api/v1/runs/{run.run_id}/artifacts/{artifact_id}/content"
+    )
+    download = client.get(
+        f"/api/v1/runs/{run.run_id}/artifacts/{artifact_id}/content?download=true"
+    )
+
+    assert inline.status_code == download.status_code == 200
+    assert inline.content == download.content == b"captured output\n"
+    assert "inline" in inline.headers["content-disposition"]
+    assert "attachment" in download.headers["content-disposition"]
+    assert store.resolved_uris == [run.artifacts[0].uri, run.artifacts[0].uri]
+
+
+def test_artifact_from_another_run_is_hidden(tmp_path: Path) -> None:
+    owner = _run()
+    other = _run()
+    artifact_id = uuid4()
+    owner.artifacts = [
+        SimpleNamespace(
+            artifact_id=artifact_id,
+            attempt_id=owner.attempts[0].attempt_id,
+            artifact_type="stdout",
+            uri=f"runs/{owner.run_id}/{owner.attempts[0].attempt_id}/{uuid4().hex}",
+            artifact_metadata={"mime_type": "text/plain"},
+        )
+    ]
+    store = FakeArtifactStore(tmp_path / "unused")
+
+    response = _console_client(ConsoleRunReader([owner, other]), store).get(
+        f"/api/v1/runs/{other.run_id}/artifacts/{artifact_id}/content"
+    )
+
+    assert response.status_code == 404
+    assert store.resolved_uris == []
+    assert "runtime" not in response.text

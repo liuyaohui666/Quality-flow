@@ -225,6 +225,14 @@ def test_duplicate_submission_has_one_effective_attempt_and_terminal_event(
         "stderr",
         "stdout",
     ]
+    for artifact in artifacts:
+        content = api_client.get(
+            f"/api/v1/runs/{run_id}/artifacts/{artifact['artifact_id']}/content"
+        )
+        assert content.status_code == 200
+        if artifact["artifact_type"] in {"junit_xml", "stdout"}:
+            assert content.content
+        assert "inline" in content.headers["content-disposition"]
     assert {artifact["attempt_id"] for artifact in artifacts} == {
         run["attempts"][0]["attempt_id"]
     }

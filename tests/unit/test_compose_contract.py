@@ -171,6 +171,17 @@ def test_worker_attempt_scratch_space_is_bounded_ephemeral_tmpfs() -> None:
         assert any(option.startswith("size=") for option in option_set)
 
 
+def test_api_reads_artifacts_without_write_access() -> None:
+    services = _compose()["services"]
+
+    assert services["api"]["volumes"] == [
+        "quality-flow-artifacts:/runtime/artifacts:ro"
+    ]
+    assert services["worker"]["volumes"] == [
+        "quality-flow-artifacts:/runtime/artifacts"
+    ]
+
+
 def test_long_running_roles_have_bounded_behavior_aware_healthchecks() -> None:
     services = _compose()["services"]
 
