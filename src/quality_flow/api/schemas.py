@@ -106,6 +106,64 @@ class SuitesResponse(BaseModel):
     suites: list[SuiteResponse]
 
 
+class RunSummaryResponse(BaseModel):
+    run_id: UUID
+    suite_id: str
+    status: str
+    outcome: str
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    latest_attempt_no: int | None
+
+
+class RunsResponse(BaseModel):
+    runs: list[RunSummaryResponse]
+
+
+class CaseResponse(BaseModel):
+    case_result_id: UUID
+    attempt_id: UUID
+    node_id: str
+    status: str
+    duration_ms: float | None
+    message: str | None
+    created_at: datetime
+
+
+class CasesResponse(BaseModel):
+    cases: list[CaseResponse]
+
+
+def run_summary_response(run: Any) -> RunSummaryResponse:
+    attempts = list(getattr(run, "attempts", []))
+    return RunSummaryResponse(
+        run_id=run.run_id,
+        suite_id=run.suite_id,
+        status=str(run.status),
+        outcome=str(run.outcome),
+        created_at=run.created_at,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        latest_attempt_no=attempts[-1].attempt_no if attempts else None,
+    )
+
+
+def case_responses(run: Any) -> list[CaseResponse]:
+    return [
+        CaseResponse(
+            case_result_id=case.case_result_id,
+            attempt_id=case.attempt_id,
+            node_id=case.node_id,
+            status=case.status,
+            duration_ms=case.duration_ms,
+            message=case.message,
+            created_at=case.created_at,
+        )
+        for case in getattr(run, "case_results", [])
+    ]
+
+
 def run_response(run: Any) -> RunResponse:
     cases = list(getattr(run, "case_results", []))
     summary = CaseSummaryResponse(

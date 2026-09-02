@@ -22,6 +22,7 @@ from quality_flow.infrastructure.database import (
     make_engine,
     make_session_factory,
 )
+from quality_flow.domain.enums import RunStatus
 from quality_flow.infrastructure.models import (
     Artifact,
     CaseResult,
@@ -35,6 +36,13 @@ from quality_flow.suites.registry import SuiteDefinition
 
 class RunReader(Protocol):
     def get_run(self, run_id: UUID) -> Any | None: ...
+
+    def list_runs(
+        self,
+        limit: int,
+        status: RunStatus | None,
+        suite_id: str | None,
+    ) -> tuple[Any, ...]: ...
 
 
 class SqlAlchemyRunReader:
@@ -86,6 +94,25 @@ class SqlAlchemyRunReader:
                 run.artifacts = []
             session.expunge(run)
             return run
+
+    def list_runs(
+        self,
+        limit: int,
+        status: RunStatus | None,
+        suite_id: str | None,
+    ) -> tuple[Run, ...]:
+        with self._session_factory() as session:
+            statement = select(Run).options(selectinload(Run.attempts))
+            if status is not None:
+                statement = statement.where(Run.status == status)
+            if suite_id is not None:
+                statement = statement.where(Run.suite_id == suite_id)
+            runs = session.scalars(
+                statement.order_by(Run.created_at.desc(), Run.run_id.desc()).limit(limit)
+            ).all()
+            for run in runs:
+                session.expunge(run)
+            return tuple(runs)
 
 
 @dataclass(frozen=True)

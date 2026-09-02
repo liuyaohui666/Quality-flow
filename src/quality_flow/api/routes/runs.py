@@ -3,18 +3,23 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 
 from quality_flow.api.dependencies import ApiDependencies
 from quality_flow.api.schemas import (
     ArtifactsResponse,
+    CasesResponse,
     EventsResponse,
     RunCreateRequest,
     RunResponse,
+    RunsResponse,
     artifact_responses,
+    case_responses,
     event_responses,
+    run_summary_response,
     run_response,
 )
+from quality_flow.domain.enums import RunStatus
 from quality_flow.suites.registry import InvalidSuiteParameter, UnknownSuiteError
 
 
@@ -57,9 +62,34 @@ def create_run(
     return run_response(run)
 
 
+@router.get("", response_model=RunsResponse)
+def get_runs(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    status_filter: RunStatus | None = Query(default=None, alias="status"),
+    suite_id: str | None = Query(default=None, min_length=1, max_length=255),
+) -> RunsResponse:
+    dependencies = _dependencies(request)
+    return RunsResponse(
+        runs=[
+            run_summary_response(run)
+            for run in dependencies.run_reader.list_runs(
+                limit, status_filter, suite_id
+            )
+        ]
+    )
+
+
 @router.get("/{run_id}", response_model=RunResponse)
 def get_run(run_id: UUID, request: Request) -> RunResponse:
     return run_response(_read_run(run_id, _dependencies(request)))
+
+
+@router.get("/{run_id}/cases", response_model=CasesResponse)
+def get_cases(run_id: UUID, request: Request) -> CasesResponse:
+    return CasesResponse(
+        cases=case_responses(_read_run(run_id, _dependencies(request)))
+    )
 
 
 @router.get("/{run_id}/events", response_model=EventsResponse)

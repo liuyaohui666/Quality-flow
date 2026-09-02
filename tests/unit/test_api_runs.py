@@ -353,6 +353,59 @@ def test_run_reader_returns_empty_result_collections_without_attempts() -> None:
     assert run.artifacts == []
 
 
+def test_run_reader_lists_newest_runs_with_status_and_suite_filters() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    oldest = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
+    newest = datetime(2026, 8, 10, 3, 0, tzinfo=UTC)
+
+    with session_factory.begin() as session:
+        session.add_all(
+            [
+                Run(
+                    suite_id="demo-api",
+                    idempotency_key="history-old",
+                    parameters={},
+                    suite_snapshot={},
+                    gate_policy_snapshot={},
+                    status=RunStatus.COMPLETED,
+                    outcome=RunOutcome.PASSED,
+                    created_at=oldest,
+                    updated_at=oldest,
+                ),
+                Run(
+                    suite_id="demo-api",
+                    idempotency_key="history-new",
+                    parameters={},
+                    suite_snapshot={},
+                    gate_policy_snapshot={},
+                    status=RunStatus.COMPLETED,
+                    outcome=RunOutcome.FAILED,
+                    created_at=newest,
+                    updated_at=newest,
+                ),
+                Run(
+                    suite_id="demo-load",
+                    idempotency_key="history-other",
+                    parameters={},
+                    suite_snapshot={},
+                    gate_policy_snapshot={},
+                    status=RunStatus.QUEUED,
+                    outcome=RunOutcome.UNKNOWN,
+                    created_at=newest,
+                    updated_at=newest,
+                ),
+            ]
+        )
+
+    runs = SqlAlchemyRunReader(session_factory).list_runs(
+        10, RunStatus.COMPLETED, "demo-api"
+    )
+
+    assert [run.idempotency_key for run in runs] == ["history-new", "history-old"]
+
+
 def test_events_artifacts_and_health_contracts(client: TestClient) -> None:
     created = client.post(
         "/api/v1/runs",
