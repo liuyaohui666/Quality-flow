@@ -57,13 +57,33 @@ flowchart LR
 
 后三个非通过终态是项目刻意制造的验证证据，不代表平台启动失败。
 
-## 只用 Git 和 Docker 启动
+## 推荐：一条命令启动控制台
 
 要求：Git、Docker Desktop（或 Docker Engine + Compose）。启动系统本身不要求宿主机安装 Python。
 
 ```powershell
 git clone <your-repository-url>
 Set-Location quality-flow
+.\qualityflow.ps1 start
+```
+
+脚本会检查 Docker、构建并启动固定的 `quality-flow-demo` Compose 项目、等待 API 就绪，然后打开 `http://127.0.0.1:18000/ui/`。后续可以直接在网页中选择套件、提交 Run、查看运行历史、逐用例结果、门禁、事件，并在线查看或下载 stdout、stderr、JUnit XML 和 Locust CSV。
+
+日常维护只需以下短命令：
+
+```powershell
+.\qualityflow.ps1 status
+.\qualityflow.ps1 logs
+.\qualityflow.ps1 stop
+```
+
+`stop` 不删除 PostgreSQL、Redis 或 Artifact 卷。项目故意不提供数据删除快捷命令，避免误清理测试历史与证据。
+
+### 高级：直接使用 Docker Compose
+
+CI、自动化脚本或故障排查仍可直接使用底层命令：
+
+```powershell
 docker compose -p quality-flow-demo up -d --build --wait --wait-timeout 180
 Invoke-RestMethod http://127.0.0.1:18000/health/live
 Invoke-RestMethod http://127.0.0.1:18000/health/ready
@@ -72,7 +92,7 @@ docker compose -p quality-flow-demo ps --all
 
 预期：PostgreSQL、Redis、API、Dispatcher、Worker、Reconciler 和 Demo Target 为 healthy，`migrate` 为 `Exited (0)`；只有 API 绑定 `127.0.0.1:18000`。
 
-## 手动提交与查询
+## 高级：通过 API 提交与查询
 
 PowerShell 示例：
 
@@ -219,7 +239,7 @@ effective execution and stale result overwrite.”
 
 ## Artifact 边界
 
-公开 API 返回 `artifact_id`、`attempt_id`、类型、SHA-256、大小、MIME 和创建时间。V1 **不提供 Artifact 文件下载接口**，也没有删除/垃圾回收 API；文件只保存在 Worker 的本地命名卷。当前限制是单 Artifact 文件 50 MiB，尚无单 Run 总量上限。
+公开 API 返回 `artifact_id`、`attempt_id`、类型、SHA-256、大小、MIME 和创建时间。控制台可通过 Run ID 与 Artifact ID 在线查看或下载文件；API 会先校验数据库归属，再解析平台生成的不透明 URI，客户端不能提交路径。API 对 Artifact 卷只有只读权限，Worker 保持写权限。当前没有删除/垃圾回收 API，单 Artifact 文件限制为 50 MiB，尚无单 Run 总量上限。
 
 ## 已知限制
 
@@ -228,7 +248,7 @@ effective execution and stale result overwrite.”
 - 无高可用/灾备、跨主机 Worker 或 exactly-once 保证；
 - 无多节点压测，只允许对本地确定性靶场执行单用户 Locust 场景；
 - 无任意 Git 仓库接入和恶意代码沙箱；
-- 无对象存储、Artifact 下载/删除/GC；
+- 无对象存储、Artifact 删除/GC；文件查看与下载仅适用于单机 Artifact 卷；
 - 无统一 JSON 日志、指标后端和告警系统；
 - 无 Kubernetes 或生产部署证据；
 - 依赖按版本范围解析，镜像未按 digest/hash 锁定，不能声称 bit-for-bit reproducible。
