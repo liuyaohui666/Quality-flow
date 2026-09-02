@@ -4,6 +4,7 @@ __pycache__/
 .ci-evidence/
 .venv/
 .worktrees/
+.superpowers/
 .env
 dist/
 build/
