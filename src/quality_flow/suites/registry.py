@@ -233,3 +233,7 @@ class SuiteRegistry:
             return self._suites[suite_id]
         except KeyError as error:
             raise UnknownSuiteError(f"Unknown suite: {suite_id}") from error
+
+    def all(self) -> tuple[SuiteDefinition, ...]:
+        """Return definitions in a stable order without exposing the registry mapping."""
+        return tuple(self._suites[suite_id] for suite_id in sorted(self._suites))

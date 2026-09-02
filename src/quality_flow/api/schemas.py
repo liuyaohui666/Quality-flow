@@ -96,6 +96,16 @@ class HealthResponse(BaseModel):
     status: str
 
 
+class SuiteResponse(BaseModel):
+    suite_id: str
+    runner_type: str
+    allowed_parameters: dict[str, list[str]]
+
+
+class SuitesResponse(BaseModel):
+    suites: list[SuiteResponse]
+
+
 def run_response(run: Any) -> RunResponse:
     cases = list(getattr(run, "case_results", []))
     summary = CaseSummaryResponse(

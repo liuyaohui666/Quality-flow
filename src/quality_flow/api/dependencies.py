@@ -30,6 +30,7 @@ from quality_flow.infrastructure.models import (
     Run,
 )
 from quality_flow.suites.registry import SuiteRegistry
+from quality_flow.suites.registry import SuiteDefinition
 
 
 class RunReader(Protocol):
@@ -92,6 +93,7 @@ class ApiDependencies:
     run_service: RunService
     run_reader: RunReader
     readiness_check: Callable[[], None]
+    suite_definitions: tuple[SuiteDefinition, ...] = ()
 
 
 def build_dependencies(project_root: Path | None = None) -> ApiDependencies:
@@ -125,4 +127,5 @@ def build_dependencies(project_root: Path | None = None) -> ApiDependencies:
         ),
         run_reader=SqlAlchemyRunReader(session_factory),
         readiness_check=check_readiness,
+        suite_definitions=registry.all(),
     )

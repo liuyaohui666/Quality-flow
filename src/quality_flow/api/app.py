@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from quality_flow.api.dependencies import ApiDependencies, build_dependencies
 from quality_flow.api.routes.health import router as health_router
 from quality_flow.api.routes.runs import router as runs_router
+from quality_flow.api.routes.suites import router as suites_router
 
 
 def create_app(dependencies: ApiDependencies | None = None) -> FastAPI:
@@ -12,6 +13,7 @@ def create_app(dependencies: ApiDependencies | None = None) -> FastAPI:
     app.state.dependencies = dependencies or build_dependencies()
     app.include_router(health_router)
     app.include_router(runs_router)
+    app.include_router(suites_router)
     return app
 
 
