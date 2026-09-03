@@ -309,6 +309,7 @@ def test_ui_exposes_test_type_and_editable_request_body_workflow() -> None:
     assert 'id="format-request-body"' in page.text
     assert 'id="validate-request-body"' in page.text
     assert 'id="request-body-content"' in page.text
+    assert '/ui/assets/app.js?v=request-body-v1' in page.text
     assert "renderSuiteOptions" in script.text
     assert "validateRequestBody" in script.text
     assert "request_body: requestBody" in script.text
