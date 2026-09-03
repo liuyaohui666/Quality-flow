@@ -259,3 +259,38 @@ def test_artifacts_are_owned_by_distinct_attempts(
     assert first_attempts == {first["run"]["attempts"][0]["attempt_id"]}
     assert second_attempts == {second["run"]["attempts"][0]["attempt_id"]}
     assert first_attempts.isdisjoint(second_attempts)
+
+
+def test_restful_booker_exposes_safe_body_contract_and_rejects_invalid_body(
+    api_client: httpx.Client,
+) -> None:
+    catalog = api_client.get("/api/v1/suites")
+    catalog.raise_for_status()
+    suite = next(
+        item
+        for item in catalog.json()["suites"]
+        if item["suite_id"] == "restful-booker-api"
+    )
+
+    assert suite["test_type"] == "api"
+    assert suite["request_body"]["example"]["firstname"] == "Ada"
+    assert "argv" not in suite
+    assert "working_directory" not in suite
+
+    before = api_client.get("/api/v1/runs", params={"limit": 100})
+    before.raise_for_status()
+    response = api_client.post(
+        "/api/v1/runs",
+        headers={"Idempotency-Key": f"e2e-invalid-body-{uuid4()}"},
+        json={
+            "suite_id": "restful-booker-api",
+            "parameters": {},
+            "request_body": {"firstname": "only-one-field"},
+        },
+    )
+    after = api_client.get("/api/v1/runs", params={"limit": 100})
+    after.raise_for_status()
+
+    assert response.status_code == 422
+    assert "Invalid request_body" in response.text
+    assert len(after.json()["runs"]) == len(before.json()["runs"])

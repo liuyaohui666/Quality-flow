@@ -67,7 +67,20 @@ Set-Location quality-flow
 .\qualityflow.ps1 start
 ```
 
-脚本会检查 Docker、构建并启动固定的 `quality-flow-demo` Compose 项目、等待 API 就绪，然后打开 `http://127.0.0.1:18000/ui/`。后续可以直接在网页中选择套件、提交 Run、查看运行历史、逐用例结果、门禁、事件，并在线查看或下载 stdout、stderr、JUnit XML 和 Locust CSV。
+脚本会检查 Docker、构建并启动固定的 `quality-flow-demo` Compose 项目、等待 API 就绪，然后打开 `http://127.0.0.1:18000/ui/`。后续可以直接在网页中选择测试类型和套件、编辑套件允许的业务 JSON、提交 Run、查看运行历史、逐用例结果、门禁、事件，并在线查看或下载 stdout、stderr、JUnit XML 和 Locust CSV。
+
+### 页面如何描述一次测试
+
+创建页把输入分成四层，避免把业务数据和执行命令混在一起：
+
+1. **测试类型**：例如接口/功能测试或性能测试，只负责筛选套件；
+2. **注册套件**：来自 `config/suites.yaml`，决定可信的 pytest/Locust 执行方式；
+3. **运行参数**：只能从套件声明的白名单值中选择，例如 `scenario=ok`；
+4. **业务请求体**：套件可选声明 JSON Schema 和安全示例，测试人员仍可在编辑器中输入任意符合该契约的 JSON 字段值。
+
+页面的“载入安全示例”“格式化 JSON”“校验请求体”和“提交 Run”分别对应本地编辑辅助与 `POST /api/v1/runs`；运行列表、详情刷新、健康检查、Artifact 查看/下载也都封装为页面操作。浏览器校验用于尽早提示，服务端 JSON Schema 校验才是最终准入标准。
+
+请求体最外层必须是 JSON 对象且不超过 64 KiB。它会作为 Run 快照保存到 PostgreSQL，并仅通过受控子进程环境变量交给已注册套件；不会进入命令行参数、Outbox 或 Redis 消息。**不要在控制台填写真实密码、生产 Token 或个人隐私数据。**
 
 日常维护只需以下短命令：
 
@@ -128,11 +141,22 @@ Invoke-RestMethod "http://127.0.0.1:18000/api/v1/runs/$($run.run_id)/artifacts"
 ```json
 {
   "suite_id": "restful-booker-api",
-  "parameters": {}
+  "parameters": {},
+  "request_body": {
+    "firstname": "Ada",
+    "lastname": "Lovelace",
+    "totalprice": 188,
+    "depositpaid": true,
+    "bookingdates": {
+      "checkin": "2027-10-01",
+      "checkout": "2027-10-05"
+    },
+    "additionalneeds": "Breakfast"
+  }
 }
 ```
 
-其中 `parameters: {}` 表示该套件不接受额外参数。产生的 Run 测试公开 Restful Booker 部署；它是公开外部服务，且被测后端不在本仓库。公开服务的可用性和本次执行结果应在触发时单独确认，因此该套件不进入必跑 CI。
+其中 `parameters: {}` 表示该套件不接受额外运行参数；`request_body` 是本次创建 booking 使用的业务数据，也可以在页面载入示例后修改。省略它时仍会使用套件原有 YAML 默认数据，保持旧调用兼容。产生的 Run 测试公开 Restful Booker 部署；它是公开外部服务，且被测后端不在本仓库。公开服务的可用性和本次执行结果应在触发时单独确认，因此该套件不进入必跑 CI。
 
 QualityFlow 保存 JUnit/stdout/stderr 作为该 Run 的平台证据；QualityFlow 不归档 Allure，独立原项目保留 Allure。
 
