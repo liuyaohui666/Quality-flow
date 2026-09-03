@@ -340,10 +340,15 @@ def test_background():
     class HeartbeatFailed(RuntimeError):
         pass
 
-    started = time.monotonic()
+    child_observed_at: float | None = None
 
     def fail_after_parent_has_time_to_exit() -> None:
-        if time.monotonic() - started >= 0.5:
+        nonlocal child_observed_at
+        if not (tmp_path / "background.pid").exists():
+            return
+        if child_observed_at is None:
+            child_observed_at = time.monotonic()
+        if time.monotonic() - child_observed_at >= 0.2:
             raise HeartbeatFailed("lease expired after pytest exited")
 
     with pytest.raises(HeartbeatFailed, match="lease expired"):
