@@ -52,7 +52,10 @@ def create_run(
     dependencies = _dependencies(request)
     try:
         created = dependencies.run_service.create_run(
-            body.suite_id, idempotency_key, body.parameters
+            body.suite_id,
+            idempotency_key,
+            body.parameters,
+            request_body=body.request_body,
         )
     except UnknownSuiteError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error

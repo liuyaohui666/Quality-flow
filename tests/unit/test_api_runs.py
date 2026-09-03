@@ -50,6 +50,7 @@ class FakeRun:
     metrics: list[Any] = field(default_factory=list)
     gates: list[Any] = field(default_factory=list)
     artifacts: list[Any] = field(default_factory=list)
+    request_body: dict[str, Any] | None = None
 
 
 class FakeRunService:
@@ -57,13 +58,20 @@ class FakeRunService:
         self.runs_by_key: dict[str, FakeRun] = {}
 
     def create_run(
-        self, suite_id: str, idempotency_key: str, parameters: dict[str, str]
+        self,
+        suite_id: str,
+        idempotency_key: str,
+        parameters: dict[str, str],
+        request_body: dict[str, Any] | None = None,
     ) -> FakeRun:
         if suite_id == "shell":
             raise UnknownSuiteError("Unknown suite: shell")
         if parameters.get("scenario") == "not-allowed":
             raise InvalidSuiteParameter("not allowlisted")
-        return self.runs_by_key.setdefault(idempotency_key, FakeRun(suite_id=suite_id))
+        return self.runs_by_key.setdefault(
+            idempotency_key,
+            FakeRun(suite_id=suite_id, request_body=request_body),
+        )
 
 
 class FakeRunReader:
@@ -132,6 +140,19 @@ def test_submit_registered_suite_returns_202_and_duplicate_key_returns_same_run(
     assert second.status_code == 202
     assert first.json()["run_id"] == second.json()["run_id"]
     assert first.json()["status"] == "queued"
+
+
+def test_submit_and_read_run_preserves_business_request_body(client: TestClient) -> None:
+    payload = {"firstname": "Ada", "nested": {"enabled": True}}
+
+    response = client.post(
+        "/api/v1/runs",
+        headers={"Idempotency-Key": "body-contract"},
+        json={"suite_id": "restful-booker-api", "parameters": {}, "request_body": payload},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["request_body"] == payload
 
 
 @pytest.mark.parametrize(

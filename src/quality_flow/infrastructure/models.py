@@ -64,6 +64,7 @@ class Run(Base):
     suite_id: Mapped[str] = mapped_column(String(255), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     parameters: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    request_body: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     suite_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     gate_policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     status: Mapped[RunStatus] = mapped_column(

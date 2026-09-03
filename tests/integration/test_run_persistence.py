@@ -82,6 +82,31 @@ def test_duplicate_keys_persist_one_run_and_one_outbox_event(
         assert stored.version == 1
 
 
+def test_custom_request_body_is_persisted_with_the_run(
+    session_factory, registry: SuiteRegistry
+) -> None:
+    payload = {
+        "firstname": "Persisted",
+        "lastname": "Payload",
+        "totalprice": 456,
+        "depositpaid": True,
+        "bookingdates": {
+            "checkin": "2027-12-10",
+            "checkout": "2027-12-12",
+        },
+        "additionalneeds": "Workspace",
+    }
+
+    created = RunService(
+        lambda: SqlAlchemyUnitOfWork(session_factory), registry
+    ).create_run("restful-booker-api", "persisted-body", {}, request_body=payload)
+
+    with session_factory() as session:
+        stored = session.get(Run, created.run_id)
+        assert stored is not None
+        assert stored.request_body == payload
+
+
 class ConstraintFailingOutboxUnitOfWork(SqlAlchemyUnitOfWork):
     def add_outbox_event(self, event: NewOutboxEvent) -> None:
         self.session.add(
@@ -249,6 +274,7 @@ def test_schema_contains_task7_foundation_and_enum_checks(session_factory) -> No
     }
 
     assert "version" in run_columns
+    assert run_columns["request_body"]["nullable"] is True
     assert run_columns["outcome"]["nullable"] is False
     assert {
         "lease_token",

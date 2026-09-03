@@ -50,6 +50,7 @@ class SqlAlchemyUnitOfWork:
                 suite_id=run.suite_id,
                 idempotency_key=run.idempotency_key,
                 parameters=run.parameters,
+                request_body=run.request_body,
                 suite_snapshot=run.suite_snapshot,
                 gate_policy_snapshot=run.gate_policy_snapshot,
                 status=run.status,

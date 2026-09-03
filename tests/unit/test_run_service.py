@@ -142,6 +142,8 @@ def test_create_run_stores_resolved_suite_and_gate_policy_snapshots(
         ],
         "timeout_seconds": 3,
         "allowed_parameters": {"scenario": ["ok", "error", "slow"]},
+        "test_type": "api",
+        "request_body": None,
         "source_revision": "main",
         "retry_policy": {
             "max_attempts": 2,
@@ -172,6 +174,60 @@ def test_invalid_parameter_does_not_start_a_transaction(
     assert fake_uow_factory.persistence.run_events == []
     assert fake_uow_factory.persistence.outbox_events == []
     assert fake_uow_factory.persistence.commits == 0
+
+
+def test_create_run_stores_validated_request_body_without_putting_it_in_outbox(
+    fake_uow_factory: FakeUnitOfWorkFactory, registry: SuiteRegistry
+) -> None:
+    payload = {
+        "firstname": "Custom",
+        "lastname": "Payload",
+        "totalprice": 321,
+        "depositpaid": False,
+        "bookingdates": {
+            "checkin": "2027-12-01",
+            "checkout": "2027-12-03",
+        },
+        "additionalneeds": "Quiet room",
+    }
+
+    run = RunService(fake_uow_factory, registry).create_run(
+        "restful-booker-api", "custom-body", {}, request_body=payload
+    )
+
+    assert run.request_body == payload
+    assert run.request_body is not payload
+    assert run.suite_snapshot["request_body"]["schema"]["type"] == "object"
+    assert fake_uow_factory.persistence.outbox_events[0].payload == {
+        "run_id": str(run.run_id),
+        "suite_id": "restful-booker-api",
+    }
+
+
+def test_invalid_request_body_does_not_start_a_transaction(
+    fake_uow_factory: FakeUnitOfWorkFactory, registry: SuiteRegistry
+) -> None:
+    service = RunService(fake_uow_factory, registry)
+
+    with pytest.raises(ValueError, match="totalprice"):
+        service.create_run(
+            "restful-booker-api",
+            "bad-body",
+            {},
+            request_body={
+                "firstname": "Ada",
+                "lastname": "Lovelace",
+                "totalprice": "expensive",
+                "depositpaid": True,
+                "bookingdates": {
+                    "checkin": "2027-10-01",
+                    "checkout": "2027-10-05",
+                },
+                "additionalneeds": "Breakfast",
+            },
+        )
+
+    assert fake_uow_factory.instances == []
 
 
 def test_service_requests_a_fresh_uow_for_each_create(

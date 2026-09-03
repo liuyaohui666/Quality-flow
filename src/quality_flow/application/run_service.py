@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -24,6 +25,7 @@ class NewRun:
     outcome: RunOutcome
     version: int
     created_at: datetime
+    request_body: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -88,12 +90,14 @@ class RunService:
         suite_id: str,
         idempotency_key: str,
         parameters: dict[str, str],
+        request_body: dict[str, Any] | None = None,
     ) -> Any:
         if not idempotency_key.strip():
             raise ValueError("idempotency_key must be non-empty")
 
         suite = self._registry.get(suite_id)
         resolved_parameters = suite.resolve_parameters(parameters)
+        resolved_request_body = suite.resolve_request_body(request_body)
         created_at = datetime.now(UTC)
 
         with self._uow_factory() as uow:
@@ -107,6 +111,7 @@ class RunService:
                 suite_id=suite.suite_id,
                 idempotency_key=idempotency_key,
                 parameters=resolved_parameters,
+                request_body=resolved_request_body,
                 suite_snapshot={
                     "suite_id": suite.suite_id,
                     "runner_type": suite.runner_type,
@@ -117,6 +122,15 @@ class RunService:
                         name: list(values)
                         for name, values in suite.allowed_parameters.items()
                     },
+                    "test_type": suite.test_type,
+                    "request_body": (
+                        {
+                            "required": suite.request_body.required,
+                            "schema": deepcopy(dict(suite.request_body.schema)),
+                        }
+                        if suite.request_body is not None
+                        else None
+                    ),
                     "source_revision": suite.source_revision,
                     "retry_policy": {
                         "max_attempts": suite.retry_policy.max_attempts,

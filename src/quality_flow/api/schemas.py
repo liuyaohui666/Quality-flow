@@ -14,6 +14,7 @@ class RunCreateRequest(BaseModel):
 
     suite_id: str = Field(min_length=1)
     parameters: dict[str, str] = Field(default_factory=dict)
+    request_body: dict[str, Any] | None = None
 
 
 class TimestampsResponse(BaseModel):
@@ -74,6 +75,7 @@ class RunResponse(BaseModel):
     metrics: list[MetricResponse]
     gates: list[GateResponse]
     artifacts: list[ArtifactResponse]
+    request_body: dict[str, Any] | None
 
 
 class RunEventResponse(BaseModel):
@@ -220,6 +222,7 @@ def run_response(run: Any) -> RunResponse:
             for gate in getattr(run, "gates", [])
         ],
         artifacts=artifact_responses(run),
+        request_body=getattr(run, "request_body", None),
     )
 
 
