@@ -136,6 +136,8 @@ async function loadRuns() {
     statePanel.textContent = "还没有符合条件的 Run。创建一次测试后，它会出现在这里。";
     table.hidden = payload.runs.length === 0;
   } catch (error) {
+    state.runs = [];
+    renderOverview();
     statePanel.textContent = `${error.message}。请确认平台已经启动后重试。`;
   }
 }
@@ -158,6 +160,20 @@ function renderRuns() {
     row.append(suite, statusCell, outcomeCell, attempt, createdAt, actionCell);
     body.append(row);
   });
+  renderOverview();
+}
+
+function renderOverview() {
+  const runs = state.runs;
+  const running = runs.filter((run) => run.status === "running").length;
+  const passed = runs.filter((run) => run.status === "completed" && run.outcome === "passed").length;
+  const attention = runs.filter((run) => (
+    run.outcome === "failed" || ["infra_failed", "timed_out"].includes(run.status)
+  )).length;
+  byId("overview-total").textContent = String(runs.length);
+  byId("overview-running").textContent = String(running);
+  byId("overview-passed").textContent = String(passed);
+  byId("overview-attention").textContent = String(attention);
 }
 
 function renderParameterFields() {
@@ -167,6 +183,7 @@ function renderParameterFields() {
   if (!suite) {
     byId("request-body-section").hidden = true;
     byId("suite-hint").textContent = "套件命令和内部路径不会暴露给页面。";
+    updateExecutionSummary();
     return;
   }
   Object.entries(suite.allowed_parameters).forEach(([name, values]) => {
@@ -185,6 +202,7 @@ function renderParameterFields() {
   const requestBodyNote = suite.request_body ? " · 支持自定义业务 JSON" : " · 无需请求体";
   byId("suite-hint").textContent = `${suite.runner_type} 套件 · ${Object.keys(suite.allowed_parameters).length} 个可选参数${requestBodyNote}`;
   renderRequestBodyEditor(suite);
+  updateExecutionSummary();
 }
 
 function renderRequestBodyEditor(suite) {
@@ -212,6 +230,30 @@ function setRequestBodyStatus(message, toneName) {
   const status = byId("request-body-status");
   status.textContent = message;
   status.dataset.tone = toneName;
+  updateExecutionSummary();
+}
+
+function updateExecutionSummary() {
+  const typeSelect = byId("test-type-select");
+  const suiteSelect = byId("suite-select");
+  if (!typeSelect || !suiteSelect) return;
+  const suite = selectedSuite();
+  const selectedTypeLabel = typeSelect.selectedOptions[0]?.textContent || "尚未选择";
+  byId("summary-test-type").textContent = typeSelect.value ? selectedTypeLabel : "尚未选择";
+  byId("summary-suite").textContent = suite?.suite_id || "尚未选择";
+  byId("summary-runner").textContent = suite?.runner_type || "—";
+
+  let payloadState = "等待配置";
+  if (suite && !suite.request_body) {
+    payloadState = "套件默认数据";
+  } else if (suite?.request_body) {
+    const raw = byId("request-body-editor").value.trim();
+    const validationTone = byId("request-body-status").dataset.tone;
+    if (!raw) payloadState = suite.request_body.required ? "等待填写" : "使用套件默认数据";
+    else if (validationTone === "danger") payloadState = "需要修正 JSON";
+    else payloadState = "JSON 已配置";
+  }
+  byId("summary-payload").textContent = payloadState;
 }
 
 function parseRequestBody() {
@@ -287,6 +329,7 @@ async function createRun(event) {
   event.preventDefault();
   const errorBox = byId("form-error");
   const button = byId("submit-run");
+  const idleButtonContent = button.innerHTML;
   errorBox.hidden = true;
   button.disabled = true;
   button.textContent = "正在提交…";
@@ -306,7 +349,7 @@ async function createRun(event) {
     errorBox.hidden = false;
   } finally {
     button.disabled = false;
-    button.textContent = "提交 Run";
+    button.innerHTML = idleButtonContent;
   }
 }
 
@@ -439,6 +482,9 @@ async function boot() {
   byId("format-request-body").addEventListener("click", formatRequestBody);
   byId("validate-request-body").addEventListener("click", validateRequestBody);
   byId("request-body-editor").addEventListener("blur", validateRequestBody);
+  byId("request-body-editor").addEventListener("input", () => {
+    setRequestBodyStatus("内容已修改，建议提交前校验。", "info");
+  });
   byId("create-form").addEventListener("submit", createRun);
   try {
     await Promise.all([loadSuites(), loadHealth()]);

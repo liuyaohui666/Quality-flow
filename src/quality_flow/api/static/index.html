@@ -5,27 +5,45 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>QualityFlow Console</title>
-  <link rel="stylesheet" href="/ui/assets/styles.css?v=request-body-v1">
+  <link rel="stylesheet" href="/ui/assets/styles.css?v=formal-console-v1">
 </head>
 <body>
   <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <svg class="icon-sprite" aria-hidden="true" focusable="false">
+    <defs>
+      <symbol id="icon-runs" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h10"/><circle cx="18" cy="17.5" r="2"/></symbol>
+      <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="icon-health" viewBox="0 0 24 24"><path d="M3 12h4l2.2-5 4.1 10 2.2-5H21"/></symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8.2A7 7 0 0 1 18.8 9M17.9 15.8A7 7 0 0 1 5.2 15"/></symbol>
+      <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+      <symbol id="icon-terminal" viewBox="0 0 24 24"><path d="m5 7 4 5-4 5M12 17h7"/></symbol>
+      <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.6 2.8 8.1 7 10 4.2-1.9 7-5.4 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+      <symbol id="icon-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+    </defs>
+  </svg>
   <div class="app-shell">
     <aside class="sidebar" aria-label="主导航">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">QF</span>
-        <span><strong>QualityFlow</strong><small>Test control plane</small></span>
+        <span class="brand-mark" aria-hidden="true"><span>Q</span><i></i></span>
+        <span><strong>QualityFlow</strong><small>Quality operations</small></span>
       </div>
+      <p class="nav-section-label">Workspace</p>
       <nav class="nav-list">
         <button class="nav-item is-active" data-view="runs" type="button">
-          <span aria-hidden="true">▤</span><span>运行记录</span>
+          <svg class="icon" aria-hidden="true"><use href="#icon-runs"/></svg><span>运行中心</span>
         </button>
         <button class="nav-item" data-view="create" type="button">
-          <span aria-hidden="true">＋</span><span>创建测试</span>
+          <svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg><span>创建测试</span>
         </button>
         <button class="nav-item" data-view="health" type="button">
-          <span aria-hidden="true">◉</span><span>服务状态</span>
+          <svg class="icon" aria-hidden="true"><use href="#icon-health"/></svg><span>服务状态</span>
         </button>
       </nav>
+      <div class="sidebar-context">
+        <span class="context-label">Environment</span>
+        <strong id="environment-label">LOCAL / COMPOSE</strong>
+        <span>QualityFlow v0.1</span>
+      </div>
       <div class="sidebar-footer">
         <span id="connection-dot" class="connection-dot" aria-hidden="true"></span>
         <span id="connection-label">正在检查平台</span>
@@ -34,17 +52,29 @@
 
     <main id="main-content" class="main-content" tabindex="-1">
       <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+      <header class="workspace-bar">
+        <div><span class="workspace-dot" aria-hidden="true"></span><span>Quality operations workspace</span></div>
+        <span class="workspace-mode">CONTROL PLANE</span>
+      </header>
 
       <section id="view-runs" class="view is-visible" aria-labelledby="runs-title">
         <header class="page-header">
           <div>
-            <p class="eyebrow">Execution history</p>
-            <h1 id="runs-title">运行记录</h1>
-            <p>查看最近测试任务，并进入每次 Run 的完整证据链。</p>
+            <p class="eyebrow">Execution center</p>
+            <h1 id="runs-title">测试运行中心</h1>
+            <p>统一观察任务状态、质量结果和每一次执行证据。</p>
           </div>
-          <button id="open-create" class="button button-primary" type="button">创建测试</button>
+          <button id="open-create" class="button button-primary" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-plus"/></svg>创建测试</button>
         </header>
 
+        <div class="overview-grid" aria-label="当前运行概览">
+          <article class="overview-card"><span class="metric-label">当前列表</span><strong id="overview-total">—</strong><small>最近载入的 Run</small></article>
+          <article class="overview-card"><span class="metric-label">正在执行</span><strong id="overview-running">—</strong><small><i class="status-pulse" aria-hidden="true"></i>Running now</small></article>
+          <article class="overview-card"><span class="metric-label">测试通过</span><strong id="overview-passed">—</strong><small>Completed / passed</small></article>
+          <article class="overview-card attention"><span class="metric-label">需要关注</span><strong id="overview-attention">—</strong><small>失败、超时或基础设施异常</small></article>
+        </div>
+
+        <div class="section-bar"><div><h2>最近运行</h2><span>最多展示 50 条记录</span></div></div>
         <div class="toolbar" aria-label="运行记录筛选">
           <label>状态
             <select id="status-filter">
@@ -59,7 +89,7 @@
           <label>测试套件
             <select id="suite-filter"><option value="">全部套件</option></select>
           </label>
-          <button id="refresh-runs" class="button button-secondary" type="button">刷新</button>
+          <button id="refresh-runs" class="button button-secondary" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg>刷新列表</button>
         </div>
 
         <div id="runs-state" class="state-panel" aria-live="polite">正在加载运行记录…</div>
@@ -76,9 +106,10 @@
           <div>
             <p class="eyebrow">New execution</p>
             <h1 id="create-title">创建测试</h1>
-            <p>只需选择已注册套件和允许的参数，平台会在后台完成调度与执行。</p>
+            <p>配置一个受平台约束的 Run，提交后由后台异步调度与执行。</p>
           </div>
         </header>
+        <div class="execution-workspace">
         <form id="create-form" class="panel form-panel">
           <div class="form-step">
             <span class="step-number" aria-hidden="true">01</span>
@@ -113,18 +144,30 @@
           <div id="form-error" class="inline-error" role="alert" hidden></div>
           <div class="form-actions">
             <button class="button button-secondary" data-view-target="runs" type="button">返回</button>
-            <button id="submit-run" class="button button-primary" type="submit">提交 Run</button>
+            <button id="submit-run" class="button button-primary" type="submit"><svg class="icon" aria-hidden="true"><use href="#icon-terminal"/></svg>提交 Run</button>
           </div>
         </form>
+        <aside id="execution-summary" class="execution-summary" aria-labelledby="execution-summary-title">
+          <div class="summary-heading"><span class="summary-icon"><svg class="icon" aria-hidden="true"><use href="#icon-terminal"/></svg></span><div><p class="eyebrow">Execution draft</p><h2 id="execution-summary-title">执行摘要</h2></div></div>
+          <dl class="summary-list">
+            <div><dt>测试类型</dt><dd id="summary-test-type">尚未选择</dd></div>
+            <div><dt>测试套件</dt><dd id="summary-suite">尚未选择</dd></div>
+            <div><dt>执行方式</dt><dd id="summary-runner">—</dd></div>
+            <div><dt>业务数据</dt><dd id="summary-payload">等待配置</dd></div>
+          </dl>
+          <div class="boundary-note"><svg class="icon" aria-hidden="true"><use href="#icon-shield"/></svg><div><strong>受控执行边界</strong><p>仅运行已注册套件。页面不会接收命令、脚本路径或生产凭据。</p></div></div>
+          <div class="flow-preview" aria-label="提交后的执行流程"><span>API 受理</span><i></i><span>异步排队</span><i></i><span>Worker 执行</span></div>
+        </aside>
+        </div>
       </section>
 
       <section id="view-detail" class="view" aria-labelledby="detail-title">
-        <button class="back-button" data-view-target="runs" type="button">← 返回运行记录</button>
+        <button class="back-button" data-view-target="runs" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-arrow"/></svg>返回运行中心</button>
         <div id="detail-state" class="state-panel" aria-live="polite">正在加载 Run…</div>
         <div id="detail-content" hidden>
           <header class="detail-header">
             <div><p id="detail-id" class="mono muted"></p><h1 id="detail-title">Run 详情</h1></div>
-            <button id="refresh-detail" class="button button-secondary" type="button">刷新</button>
+            <button id="refresh-detail" class="button button-secondary" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg>刷新状态</button>
           </header>
           <div id="summary-grid" class="summary-grid"></div>
           <div class="detail-grid">
@@ -140,15 +183,15 @@
       </section>
 
       <section id="view-health" class="view" aria-labelledby="health-title">
-        <header class="page-header compact"><div><p class="eyebrow">Platform readiness</p><h1 id="health-title">服务状态</h1><p>这里只展示控制面的实时可用性，不暴露数据库和 Redis 凭据。</p></div></header>
+        <header class="page-header compact"><div><p class="eyebrow">Platform readiness</p><h1 id="health-title">平台运行状态</h1><p>观察控制面的存活与依赖就绪情况，不暴露数据库和 Redis 凭据。</p></div></header>
         <div class="health-grid">
-          <article class="panel"><h2>存活检查</h2><p id="live-status" class="health-value">检查中…</p><small>/health/live</small></article>
-          <article class="panel"><h2>就绪检查</h2><p id="ready-status" class="health-value">检查中…</p><small>/health/ready</small></article>
+          <article class="panel health-card"><span class="health-icon"><svg class="icon" aria-hidden="true"><use href="#icon-health"/></svg></span><div><span class="metric-label">PROCESS</span><h2>存活检查</h2><p id="live-status" class="health-value">检查中…</p><code>GET /health/live</code></div></article>
+          <article class="panel health-card"><span class="health-icon"><svg class="icon" aria-hidden="true"><use href="#icon-database"/></svg></span><div><span class="metric-label">DEPENDENCIES</span><h2>就绪检查</h2><p id="ready-status" class="health-value">检查中…</p><code>GET /health/ready</code></div></article>
         </div>
-        <button id="refresh-health" class="button button-secondary" type="button">重新检查</button>
+        <button id="refresh-health" class="button button-secondary" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-refresh"/></svg>重新检查</button>
       </section>
     </main>
   </div>
-  <script src="/ui/assets/app.js?v=request-body-v1" defer></script>
+  <script src="/ui/assets/app.js?v=formal-console-v1" defer></script>
 </body>
 </html>
