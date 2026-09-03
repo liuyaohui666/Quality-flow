@@ -91,6 +91,55 @@ def test_pytest_runner_executes_restful_booker_offline_unit_suite(
     }
 
 
+def test_restful_booker_fixture_uses_custom_run_request_body(
+    tmp_path: Path,
+) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    workspace = tmp_path / "workspace"
+    shutil.copytree(project_root / "demo_suites" / "restful_booker", workspace)
+    (workspace / "tests" / "test_request_body_input.py").write_text(
+        """def test_request_body_input(booking_data):
+    assert booking_data[\"valid_booking\"] == {
+        \"firstname\": \"Custom\",
+        \"lastname\": \"Payload\",
+        \"totalprice\": 456,
+        \"depositpaid\": False,
+        \"bookingdates\": {
+            \"checkin\": \"2027-12-01\",
+            \"checkout\": \"2027-12-03\",
+        },
+        \"additionalneeds\": \"Quiet room\",
+    }
+""",
+        encoding="utf-8",
+    )
+    payload = {
+        "firstname": "Custom",
+        "lastname": "Payload",
+        "totalprice": 456,
+        "depositpaid": False,
+        "bookingdates": {
+            "checkin": "2027-12-01",
+            "checkout": "2027-12-03",
+        },
+        "additionalneeds": "Quiet room",
+    }
+    spec = ExecutionSpec(
+        argv=("python", "-m", "pytest", "tests/test_request_body_input.py", "-q"),
+        timeout_seconds=30,
+        allowed_workspace_root=tmp_path,
+        request_body=payload,
+    )
+
+    outcome = PytestRunner(staging_root=tmp_path / "staging").run(
+        spec, workspace, lambda: None
+    )
+
+    assert outcome.attempt_status is AttemptStatus.PASSED
+    assert outcome.case_summary is not None
+    assert outcome.case_summary.passed == 1
+
+
 def test_anomalous_auth_failure_never_persists_raw_secrets(tmp_path: Path) -> None:
     project_root = Path(__file__).resolve().parents[2]
     source_suite = project_root / "demo_suites" / "restful_booker"

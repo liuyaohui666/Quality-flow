@@ -24,6 +24,17 @@ from quality_flow.runners.subprocess_runner import (
 )
 
 
+def test_clean_environment_injects_compact_business_request_body_json() -> None:
+    payload = {"firstname": "江", "nested": {"enabled": True}, "count": 2}
+
+    environment = build_clean_environment({}, request_body=payload)
+
+    assert environment["QUALITY_FLOW_REQUEST_BODY_JSON"] == (
+        '{"firstname":"江","nested":{"enabled":true},"count":2}'
+    )
+    assert "QUALITY_FLOW_REQUEST_BODY_JSON" not in build_clean_environment({})
+
+
 def test_validate_result_file_reports_reparse_point_as_unsafe_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

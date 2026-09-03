@@ -75,7 +75,11 @@ class LocustRunner:
             heartbeat=heartbeat,
             result_directory=result_directory,
             allowed_workspace_root=spec.allowed_workspace_root,
-            environment=build_clean_environment(spec.parameters, self._environment),
+            environment=build_clean_environment(
+                spec.parameters,
+                self._environment,
+                request_body=spec.request_body,
+            ),
         )
         staging_directory = prepare_staging_directory(
             resolved_workspace,

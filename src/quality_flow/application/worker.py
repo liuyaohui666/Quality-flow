@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 import shutil
 from threading import Event, Lock, Thread, current_thread
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from quality_flow._bounded_callback import (
@@ -68,6 +68,7 @@ class ClaimedExecution:
     argv: tuple[str, ...]
     timeout_seconds: float
     parameters: Mapping[str, str]
+    request_body: Mapping[str, Any] | None
     gate_policy: GatePolicy
 
 
@@ -318,6 +319,11 @@ class RunWorker:
                     argv=tuple(argv_value),
                     timeout_seconds=snapshot["timeout_seconds"],
                     parameters=dict(run.parameters),
+                    request_body=(
+                        dict(run.request_body)
+                        if run.request_body is not None
+                        else None
+                    ),
                     gate_policy=policy,
                 )
             except (KeyError, TypeError, ValueError) as error:
@@ -342,6 +348,7 @@ class RunWorker:
                 timeout_seconds=claimed.timeout_seconds,
                 allowed_workspace_root=workspace.resolve(),
                 parameters=claimed.parameters,
+                request_body=claimed.request_body,
                 gate_policy=claimed.gate_policy,
             )
         except (OSError, shutil.Error, TypeError, ValueError) as error:

@@ -1,6 +1,8 @@
 """pytest fixtures for Restful Booker API tests."""
 
 from copy import deepcopy
+import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +24,14 @@ def settings() -> dict[str, Any]:
 
 @pytest.fixture(scope="session")
 def booking_data() -> dict[str, Any]:
-    return load_yaml(PROJECT_ROOT / "data" / "booking_data.yaml")
+    data = load_yaml(PROJECT_ROOT / "data" / "booking_data.yaml")
+    encoded_request_body = os.environ.get("QUALITY_FLOW_REQUEST_BODY_JSON")
+    if encoded_request_body:
+        request_body = json.loads(encoded_request_body)
+        if not isinstance(request_body, dict):
+            raise ValueError("QUALITY_FLOW_REQUEST_BODY_JSON must contain an object")
+        data["valid_booking"] = request_body
+    return data
 
 
 @pytest.fixture(scope="session")

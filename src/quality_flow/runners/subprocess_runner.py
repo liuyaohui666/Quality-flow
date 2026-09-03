@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
 import math
 import os
 from pathlib import Path
@@ -15,7 +16,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import BinaryIO
+from typing import Any, BinaryIO
 from uuid import uuid4
 
 import psutil
@@ -271,6 +272,8 @@ def validate_result_file(
 def build_clean_environment(
     parameters: Mapping[str, str],
     injected_environment: Mapping[str, str] | None = None,
+    *,
+    request_body: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
     environment = {
         "PYTHONDONTWRITEBYTECODE": "1",
@@ -302,6 +305,12 @@ def build_clean_environment(
         ):
             raise RunnerConfigurationError("runner parameter is not safe for environment use")
         environment[f"QUALITY_FLOW_PARAM_{name.upper()}"] = value
+    if request_body is not None:
+        environment["QUALITY_FLOW_REQUEST_BODY_JSON"] = json.dumps(
+            dict(request_body),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     return environment
 
 

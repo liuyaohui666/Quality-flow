@@ -152,6 +152,7 @@ def _create_snapshot_run(
     key: str,
     *,
     retry_policy: dict[str, object] | None = None,
+    request_body: dict[str, object] | None = None,
 ):
     run_id = uuid4()
     now = datetime(2026, 8, 10, 2, 0, tzinfo=UTC)
@@ -173,6 +174,7 @@ def _create_snapshot_run(
                 suite_id="snapshot-suite",
                 idempotency_key=key,
                 parameters={"scenario": "stored"},
+                request_body=request_body,
                 suite_snapshot=suite_snapshot,
                 gate_policy_snapshot={
                     "min_pass_rate": 1.0,
@@ -1120,8 +1122,13 @@ def test_terminal_attempt_lock_timeout_rolls_back_run_lock_before_holder_release
 
 
 class RichFailingRunner:
-    def __init__(self, staging_root: Path) -> None:
+    def __init__(
+        self,
+        staging_root: Path,
+        expected_request_body: dict[str, object] | None = None,
+    ) -> None:
         self._staging_root = staging_root
+        self._expected_request_body = expected_request_body
         self.call = None
         self.calls = 0
 
@@ -1130,6 +1137,7 @@ class RichFailingRunner:
         self.call = (spec, workspace)
         assert spec.allowed_workspace_root == workspace.resolve()
         assert spec.parameters == {"scenario": "stored"}
+        assert spec.request_body == self._expected_request_body
         assert spec.gate_policy.min_pass_rate == 1.0
         assert tuple(spec.argv) == ("python", "-m", "pytest", "suite.py")
         (workspace / "suite.py").write_text("attempt changed only\n", encoding="utf-8")
@@ -1300,11 +1308,18 @@ def test_terminal_write_persists_entire_aggregate_from_immutable_snapshot(
     source.mkdir()
     source_file = source / "suite.py"
     source_file.write_text("trusted snapshot source\n", encoding="utf-8")
-    run_id = _create_snapshot_run(session_factory, source, "terminal-aggregate")
+    run_id = _create_snapshot_run(
+        session_factory,
+        source,
+        "terminal-aggregate",
+        request_body={"input": {"custom": True}},
+    )
     staging_root = tmp_path / "runner-staging"
     staging_root.mkdir()
     runner_staging = staging_root / "attempt-output"
-    runner = RichFailingRunner(runner_staging)
+    runner = RichFailingRunner(
+        runner_staging, expected_request_body={"input": {"custom": True}}
+    )
     artifact_store = FileArtifactStore(tmp_path / "artifacts")
     worker = RunWorker(
         session_factory,

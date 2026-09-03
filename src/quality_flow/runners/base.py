@@ -1,11 +1,13 @@
 """Pure runner result data used by parsers and quality-gate evaluation."""
 
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 import math
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 from quality_flow.domain.enums import AttemptStatus
 from quality_flow.suites.registry import GatePolicy
@@ -70,6 +72,7 @@ class ExecutionSpec:
     allowed_workspace_root: Path
     parameters: Mapping[str, str] = field(default_factory=dict)
     gate_policy: GatePolicy = field(default_factory=GatePolicy)
+    request_body: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -89,6 +92,10 @@ class ExecutionSpec:
             for name, value in self.parameters.items()
         ):
             raise ValueError("parameters must map strings to strings")
+        if self.request_body is not None and not isinstance(
+            self.request_body, Mapping
+        ):
+            raise ValueError("request_body must be a mapping")
         allowed_workspace_root = Path(self.allowed_workspace_root)
         if any(part == ".." for part in allowed_workspace_root.parts):
             raise ValueError("allowed_workspace_root must not contain parent traversal")
@@ -100,6 +107,15 @@ class ExecutionSpec:
         )
         object.__setattr__(
             self, "parameters", MappingProxyType(dict(self.parameters))
+        )
+        object.__setattr__(
+            self,
+            "request_body",
+            (
+                MappingProxyType(deepcopy(dict(self.request_body)))
+                if self.request_body is not None
+                else None
+            ),
         )
 
 
