@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import Any, Literal, Mapping
 
 import yaml
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
+
+
+MAX_REQUEST_BODY_BYTES = 65_536
 
 
 class SuiteRegistryError(ValueError):
@@ -20,6 +27,10 @@ class UnknownSuiteError(SuiteRegistryError):
 
 class InvalidSuiteParameter(SuiteRegistryError):
     """Raised when a suite parameter is not explicitly allowlisted."""
+
+
+class InvalidSuiteRequestBody(SuiteRegistryError):
+    """Raised when a business request body violates its suite contract."""
 
 
 @dataclass(frozen=True)
@@ -38,6 +49,43 @@ class RetryPolicy:
 
 
 @dataclass(frozen=True)
+class RequestBodyDefinition:
+    required: bool
+    schema: Mapping[str, Any]
+    example: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        schema = deepcopy(dict(self.schema))
+        example = deepcopy(dict(self.example))
+        try:
+            Draft202012Validator.check_schema(schema)
+        except SchemaError as error:
+            raise SuiteRegistryError("request_body schema is invalid") from error
+        object.__setattr__(self, "schema", MappingProxyType(schema))
+        object.__setattr__(self, "example", MappingProxyType(example))
+
+    def validate(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        payload = deepcopy(dict(value))
+        encoded = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        if len(encoded) > MAX_REQUEST_BODY_BYTES:
+            raise InvalidSuiteRequestBody(
+                f"request_body exceeds {MAX_REQUEST_BODY_BYTES} bytes"
+            )
+        errors = sorted(
+            Draft202012Validator(dict(self.schema)).iter_errors(payload),
+            key=lambda error: list(error.absolute_path),
+        )
+        if errors:
+            error = errors[0]
+            field_path = ".".join(str(part) for part in error.absolute_path)
+            location = f" at request_body.{field_path}" if field_path else " in request_body"
+            raise InvalidSuiteRequestBody(f"Invalid request_body{location}: {error.message}")
+        return payload
+
+
+@dataclass(frozen=True)
 class SuiteDefinition:
     suite_id: str
     runner_type: Literal["pytest", "locust"]
@@ -48,6 +96,8 @@ class SuiteDefinition:
     gate_policy: GatePolicy
     retry_policy: RetryPolicy
     source_revision: str
+    test_type: Literal["api", "performance"] = "api"
+    request_body: RequestBodyDefinition | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "working_directory", self.working_directory.resolve())
@@ -71,6 +121,19 @@ class SuiteDefinition:
                 )
             resolved[name] = value
         return resolved
+
+    def resolve_request_body(
+        self, supplied: Mapping[str, Any] | None
+    ) -> dict[str, Any] | None:
+        if supplied is None:
+            if self.request_body is not None and self.request_body.required:
+                raise InvalidSuiteRequestBody("request_body is required")
+            return None
+        if self.request_body is None:
+            raise InvalidSuiteRequestBody(
+                f"Suite {self.suite_id!r} does not accept a request_body"
+            )
+        return self.request_body.validate(supplied)
 
 
 @dataclass(frozen=True)
@@ -140,6 +203,14 @@ class SuiteRegistry:
         retry_policy = SuiteRegistry._parse_retry_policy(
             raw_suite.get("retry_policy"), suite_id
         )
+        test_type = raw_suite.get(
+            "test_type", "performance" if runner_type == "locust" else "api"
+        )
+        if test_type not in ("api", "performance"):
+            raise SuiteRegistryError(f"Suite {suite_id!r} has an invalid test_type")
+        request_body = SuiteRegistry._parse_request_body(
+            raw_suite.get("request_body"), suite_id
+        )
 
         return SuiteDefinition(
             suite_id=suite_id,
@@ -151,7 +222,45 @@ class SuiteRegistry:
             gate_policy=gate_policy,
             retry_policy=retry_policy,
             source_revision=source_revision,
+            test_type=test_type,
+            request_body=request_body,
         )
+
+    @staticmethod
+    def _parse_request_body(
+        raw_definition: object, suite_id: str
+    ) -> RequestBodyDefinition | None:
+        if raw_definition is None:
+            return None
+        if not isinstance(raw_definition, dict) or set(raw_definition) - {
+            "required",
+            "schema",
+            "example",
+        }:
+            raise SuiteRegistryError(
+                f"Suite {suite_id!r} has an invalid request_body definition"
+            )
+        required = raw_definition.get("required", False)
+        schema = raw_definition.get("schema")
+        example = raw_definition.get("example")
+        if type(required) is not bool or not isinstance(schema, dict) or not isinstance(
+            example, dict
+        ):
+            raise SuiteRegistryError(
+                f"Suite {suite_id!r} request_body needs required, schema, and example"
+            )
+        definition = RequestBodyDefinition(
+            required=required,
+            schema=schema,
+            example=example,
+        )
+        try:
+            definition.validate(example)
+        except InvalidSuiteRequestBody as error:
+            raise SuiteRegistryError(
+                f"Suite {suite_id!r} request_body example is invalid: {error}"
+            ) from error
+        return definition
 
     @staticmethod
     def _parse_retry_policy(raw_policy: object, suite_id: str) -> RetryPolicy:

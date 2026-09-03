@@ -3,7 +3,11 @@
 from fastapi import APIRouter, Request
 
 from quality_flow.api.dependencies import ApiDependencies
-from quality_flow.api.schemas import SuiteResponse, SuitesResponse
+from quality_flow.api.schemas import (
+    SuiteRequestBodyResponse,
+    SuiteResponse,
+    SuitesResponse,
+)
 
 
 router = APIRouter(prefix="/api/v1/suites", tags=["suites"])
@@ -17,10 +21,20 @@ def get_suites(request: Request) -> SuitesResponse:
             SuiteResponse(
                 suite_id=suite.suite_id,
                 runner_type=suite.runner_type,
+                test_type=suite.test_type,
                 allowed_parameters={
                     name: list(values)
                     for name, values in suite.allowed_parameters.items()
                 },
+                request_body=(
+                    SuiteRequestBodyResponse(
+                        required=suite.request_body.required,
+                        json_schema=dict(suite.request_body.schema),
+                        example=dict(suite.request_body.example),
+                    )
+                    if suite.request_body is not None
+                    else None
+                ),
             )
             for suite in dependencies.suite_definitions
         ]

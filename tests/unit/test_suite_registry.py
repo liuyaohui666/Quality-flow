@@ -8,6 +8,7 @@ import pytest
 from quality_flow.infrastructure.config import Settings
 from quality_flow.suites.registry import (
     InvalidSuiteParameter,
+    InvalidSuiteRequestBody,
     SuiteRegistryError,
     SuiteRegistry,
     UnknownSuiteError,
@@ -83,6 +84,82 @@ def test_repository_registry_registers_restful_booker_api(
         suite.resolve_parameters({"base_url": "https://example.test"})
     assert suite.gate_policy.min_pass_rate == 1.0
     assert suite.gate_policy.max_failures == 0
+
+
+def test_restful_booker_request_body_contract_accepts_valid_business_json(
+    registry: SuiteRegistry,
+) -> None:
+    suite = registry.get("restful-booker-api")
+    payload = {
+        "firstname": "Lin",
+        "lastname": "Hui",
+        "totalprice": 268,
+        "depositpaid": True,
+        "bookingdates": {
+            "checkin": "2027-09-01",
+            "checkout": "2027-09-05",
+        },
+        "additionalneeds": "Breakfast",
+    }
+
+    assert suite.test_type == "api"
+    assert suite.resolve_request_body(payload) == payload
+    assert suite.resolve_request_body(payload) is not payload
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"firstname": "Lin"}, "request_body"),
+        (
+            {
+                "firstname": "Lin",
+                "lastname": "Hui",
+                "totalprice": "268",
+                "depositpaid": True,
+                "bookingdates": {
+                    "checkin": "2027-09-01",
+                    "checkout": "2027-09-05",
+                },
+                "additionalneeds": "Breakfast",
+            },
+            "totalprice",
+        ),
+        (
+            {
+                "firstname": "Lin",
+                "lastname": "Hui",
+                "totalprice": 268,
+                "depositpaid": True,
+                "bookingdates": {
+                    "checkin": "2027-09-01",
+                    "checkout": "2027-09-05",
+                },
+                "additionalneeds": "Breakfast",
+                "command": "rm -rf /",
+            },
+            "command",
+        ),
+    ],
+)
+def test_restful_booker_request_body_contract_rejects_invalid_business_json(
+    registry: SuiteRegistry,
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(InvalidSuiteRequestBody, match=message):
+        registry.get("restful-booker-api").resolve_request_body(payload)
+
+
+def test_suite_without_request_body_contract_rejects_a_body(
+    registry: SuiteRegistry,
+) -> None:
+    suite = registry.get("demo-api")
+
+    assert suite.test_type == "api"
+    assert suite.resolve_request_body(None) is None
+    with pytest.raises(InvalidSuiteRequestBody, match="does not accept"):
+        suite.resolve_request_body({"unexpected": True})
 
 
 def test_registry_parses_conservative_retry_policy(registry: SuiteRegistry) -> None:

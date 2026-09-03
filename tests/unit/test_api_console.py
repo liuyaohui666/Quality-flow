@@ -10,7 +10,12 @@ from fastapi.testclient import TestClient
 
 from quality_flow.api.app import create_app
 from quality_flow.domain.enums import AttemptStatus, RunOutcome, RunStatus
-from quality_flow.suites.registry import GatePolicy, RetryPolicy, SuiteDefinition
+from quality_flow.suites.registry import (
+    GatePolicy,
+    RequestBodyDefinition,
+    RetryPolicy,
+    SuiteDefinition,
+)
 
 
 def _suite() -> SuiteDefinition:
@@ -24,6 +29,17 @@ def _suite() -> SuiteDefinition:
         gate_policy=GatePolicy(),
         retry_policy=RetryPolicy(),
         source_revision="main",
+        test_type="api",
+        request_body=RequestBodyDefinition(
+            required=False,
+            schema={
+                "type": "object",
+                "properties": {"firstname": {"type": "string"}},
+                "required": ["firstname"],
+                "additionalProperties": False,
+            },
+            example={"firstname": "Ada"},
+        ),
     )
 
 
@@ -47,8 +63,19 @@ def test_suite_catalog_exposes_only_safe_creation_fields() -> None:
             {
                 "suite_id": "demo-api",
                 "runner_type": "pytest",
+                "test_type": "api",
                 "allowed_parameters": {
                     "scenario": ["ok", "error", "slow"],
+                },
+                "request_body": {
+                    "required": False,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"firstname": {"type": "string"}},
+                        "required": ["firstname"],
+                        "additionalProperties": False,
+                    },
+                    "example": {"firstname": "Ada"},
                 },
             }
         ]

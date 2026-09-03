@@ -96,10 +96,20 @@ class HealthResponse(BaseModel):
     status: str
 
 
+class SuiteRequestBodyResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    required: bool
+    json_schema: dict[str, Any] = Field(alias="schema")
+    example: dict[str, Any]
+
+
 class SuiteResponse(BaseModel):
     suite_id: str
     runner_type: str
+    test_type: str
     allowed_parameters: dict[str, list[str]]
+    request_body: SuiteRequestBodyResponse | None
 
 
 class SuitesResponse(BaseModel):
