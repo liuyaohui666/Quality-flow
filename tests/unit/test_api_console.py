@@ -295,6 +295,26 @@ def test_ui_shell_and_assets_are_served() -> None:
     assert "createRun" in script.text
 
 
+def test_ui_exposes_test_type_and_editable_request_body_workflow() -> None:
+    client = _client()
+
+    page = client.get("/ui/")
+    script = client.get("/ui/assets/app.js")
+
+    assert page.status_code == script.status_code == 200
+    assert 'id="test-type-select"' in page.text
+    assert 'id="request-body-section"' in page.text
+    assert 'id="request-body-editor"' in page.text
+    assert 'id="load-request-example"' in page.text
+    assert 'id="format-request-body"' in page.text
+    assert 'id="validate-request-body"' in page.text
+    assert 'id="request-body-content"' in page.text
+    assert "renderSuiteOptions" in script.text
+    assert "validateRequestBody" in script.text
+    assert "request_body: requestBody" in script.text
+    assert "run.request_body" in script.text
+
+
 def test_ui_assets_are_included_in_the_installed_python_package() -> None:
     project_root = Path(__file__).resolve().parents[2]
     pyproject = tomllib.loads(

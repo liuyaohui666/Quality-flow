@@ -80,10 +80,36 @@
           </div>
         </header>
         <form id="create-form" class="panel form-panel">
+          <div class="form-step">
+            <span class="step-number" aria-hidden="true">01</span>
+            <div><strong>选择执行入口</strong><p>先选测试类型，再从平台已经审核注册的套件中选择。</p></div>
+          </div>
+          <label for="test-type-select">测试类型</label>
+          <select id="test-type-select" required><option value="">请选择类型</option></select>
           <label for="suite-select">测试套件</label>
           <select id="suite-select" required><option value="">请选择套件</option></select>
           <p id="suite-hint" class="field-hint">套件命令和内部路径不会暴露给页面。</p>
           <div id="parameter-fields" class="parameter-grid"></div>
+          <section id="request-body-section" class="request-editor" aria-labelledby="request-body-title" hidden>
+            <div class="editor-heading">
+              <div>
+                <div class="editor-title-line"><span class="step-number" aria-hidden="true">02</span><h2 id="request-body-title">业务请求体</h2></div>
+                <p id="request-body-help">按套件约定编辑 JSON；平台会在提交前和服务端各校验一次。</p>
+              </div>
+              <span class="data-warning">仅限测试数据</span>
+            </div>
+            <label for="request-body-editor">JSON 请求体</label>
+            <textarea id="request-body-editor" class="json-editor" rows="17" spellcheck="false" aria-describedby="request-body-help request-body-status"></textarea>
+            <div class="editor-toolbar">
+              <div class="editor-actions">
+                <button id="load-request-example" class="button button-quiet" type="button">载入安全示例</button>
+                <button id="format-request-body" class="button button-quiet" type="button">格式化 JSON</button>
+                <button id="validate-request-body" class="button button-secondary" type="button">校验请求体</button>
+              </div>
+              <span id="request-body-status" class="validation-status" role="status" aria-live="polite">等待校验</span>
+            </div>
+            <p class="privacy-note">不要填写真实密码、生产 Token 或个人隐私数据。提交内容会随 Run 保存，便于复盘。</p>
+          </section>
           <div id="form-error" class="inline-error" role="alert" hidden></div>
           <div class="form-actions">
             <button class="button button-secondary" data-view-target="runs" type="button">返回</button>
@@ -102,6 +128,7 @@
           </header>
           <div id="summary-grid" class="summary-grid"></div>
           <div class="detail-grid">
+            <section class="panel wide"><div class="panel-heading"><h2>本次业务请求体</h2><span class="muted">Run 快照</span></div><div id="request-body-content"></div></section>
             <section class="panel wide"><div class="panel-heading"><h2>测试用例</h2><span id="case-count" class="muted"></span></div><div id="cases-content"></div></section>
             <section class="panel"><div class="panel-heading"><h2>质量门禁</h2></div><div id="gates-content"></div></section>
             <section class="panel"><div class="panel-heading"><h2>性能指标</h2></div><div id="metrics-content"></div></section>
