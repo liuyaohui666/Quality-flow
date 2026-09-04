@@ -67,7 +67,7 @@ Set-Location quality-flow
 .\qualityflow.ps1 start
 ```
 
-脚本会检查 Docker、构建并启动固定的 `quality-flow-demo` Compose 项目、等待 API 就绪，然后打开 `http://127.0.0.1:18000/ui/`。控制台采用面向测试运营的工作台布局，提供运行概览、筛选与状态观察；创建页可选择测试类型和套件、编辑套件允许的业务 JSON，并在提交前核对执行摘要。Run 完成后，可继续查看逐用例结果、门禁、事件，并在线查看或下载 stdout、stderr、JUnit XML 和 Locust CSV。
+脚本会检查 Docker、构建并启动固定的 `quality-flow-demo` Compose 项目、等待 API 就绪，然后打开 `http://127.0.0.1:18000/ui/`。浅色测试运营控制台按运行概览、运行任务、创建测试、套件目录、服务状态和 API 文档组织；概览与任务列表复用真实 Run 数据，套件目录来自受校验的注册表。创建页可编辑套件允许的业务 JSON，并在提交前核对执行摘要。Run 完成后，可继续查看逐用例结果、门禁、事件，并在线查看或下载 stdout、stderr、JUnit XML 和 Locust CSV。
 
 ### 页面如何描述一次测试
 

@@ -2,6 +2,14 @@
 
 const state = { suites: [], runs: [], selectedRunId: null, pollTimer: null };
 const terminalStatuses = new Set(["completed", "infra_failed", "timed_out"]);
+const viewLabels = {
+  overview: "运行概览",
+  runs: "运行任务",
+  create: "创建测试",
+  suites: "套件目录",
+  detail: "Run 详情",
+  health: "服务状态",
+};
 
 const byId = (id) => document.getElementById(id);
 const create = (tag, className, text) => {
@@ -48,8 +56,10 @@ function showView(name) {
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("is-visible"));
   byId(`view-${name}`).classList.add("is-visible");
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("is-active", item.dataset.view === name));
+  byId("workspace-location").textContent = viewLabels[name] || "QualityFlow";
   if (name !== "detail") stopPolling();
-  if (name === "runs") loadRuns();
+  if (["overview", "runs"].includes(name)) loadRuns();
+  if (name === "suites") renderSuiteCatalog();
   if (name === "health") loadHealth();
   byId("main-content").focus({ preventScroll: true });
 }
@@ -102,6 +112,52 @@ async function loadSuites() {
     testTypeSelect.append(option);
   });
   renderSuiteOptions();
+  renderSuiteCatalog();
+  byId("overview-suite-count").textContent = String(state.suites.length);
+}
+
+function renderSuiteCatalog() {
+  const catalog = byId("suite-catalog");
+  const statePanel = byId("suites-state");
+  if (!catalog || !statePanel) return;
+  catalog.replaceChildren();
+  state.suites.forEach((suite) => {
+    const card = create("article", "suite-card");
+    const header = create("div", "suite-card-header");
+    const heading = create("div");
+    heading.append(create("span", "suite-type", suite.test_type === "performance" ? "性能测试" : "接口 / 功能测试"));
+    heading.append(create("h2", "", suite.suite_id));
+    header.append(heading, badge(suite.runner_type));
+
+    const facts = create("dl", "suite-facts");
+    const parameterNames = Object.keys(suite.allowed_parameters);
+    const factValues = [
+      ["Runner", suite.runner_type],
+      ["运行参数", parameterNames.length ? parameterNames.join("、") : "无"],
+      ["业务请求体", suite.request_body ? (suite.request_body.required ? "必填 JSON" : "可选 JSON") : "使用套件默认数据"],
+    ];
+    factValues.forEach(([label, value]) => {
+      const item = create("div");
+      item.append(create("dt", "", label), create("dd", "", value));
+      facts.append(item);
+    });
+    const action = create("button", "button button-secondary button-block", "使用此套件创建测试");
+    action.type = "button";
+    action.addEventListener("click", () => prepareSuiteRun(suite));
+    card.append(header, facts, action);
+    catalog.append(card);
+  });
+  statePanel.hidden = state.suites.length > 0;
+  statePanel.textContent = "当前没有已注册套件。";
+  catalog.hidden = state.suites.length === 0;
+}
+
+function prepareSuiteRun(suite) {
+  showView("create");
+  byId("test-type-select").value = suite.test_type;
+  renderSuiteOptions();
+  byId("suite-select").value = suite.suite_id;
+  renderParameterFields();
 }
 
 function renderSuiteOptions() {
@@ -132,12 +188,14 @@ async function loadRuns() {
     const payload = await api(`/api/v1/runs?${params}`);
     state.runs = payload.runs;
     renderRuns();
+    renderOverviewRecent();
     statePanel.hidden = payload.runs.length > 0;
     statePanel.textContent = "还没有符合条件的 Run。创建一次测试后，它会出现在这里。";
     table.hidden = payload.runs.length === 0;
   } catch (error) {
     state.runs = [];
     renderOverview();
+    renderOverviewRecent(error.message);
     statePanel.textContent = `${error.message}。请确认平台已经启动后重试。`;
   }
 }
@@ -174,6 +232,35 @@ function renderOverview() {
   byId("overview-running").textContent = String(running);
   byId("overview-passed").textContent = String(passed);
   byId("overview-attention").textContent = String(attention);
+}
+
+function renderOverviewRecent(errorMessage = "") {
+  const body = byId("overview-recent-body");
+  const statePanel = byId("overview-recent-state");
+  const table = byId("overview-recent-table-wrap");
+  if (!body || !statePanel || !table) return;
+  body.replaceChildren();
+  if (errorMessage) {
+    statePanel.hidden = false;
+    statePanel.textContent = `${errorMessage}。请确认平台已经启动。`;
+    table.hidden = true;
+    return;
+  }
+  state.runs.slice(0, 6).forEach((run) => {
+    const row = document.createElement("tr");
+    const statusCell = create("td"); statusCell.append(badge(run.status));
+    const outcomeCell = create("td"); outcomeCell.append(badge(run.outcome));
+    const actionCell = create("td");
+    const action = create("button", "row-button", "查看详情");
+    action.type = "button";
+    action.addEventListener("click", () => openRun(run.run_id));
+    actionCell.append(action);
+    row.append(create("td", "suite-name", run.suite_id), statusCell, outcomeCell, create("td", "", formatTime(run.created_at)), actionCell);
+    body.append(row);
+  });
+  statePanel.hidden = state.runs.length > 0;
+  statePanel.textContent = "还没有 Run。创建一次测试后，它会出现在这里。";
+  table.hidden = state.runs.length === 0;
 }
 
 function renderParameterFields() {
@@ -464,13 +551,20 @@ async function loadHealth() {
   try { await api("/health/ready"); ready = true; } catch (_) { ready = false; }
   byId("live-status").replaceChildren(badge(live ? "passed" : "failed"));
   byId("ready-status").replaceChildren(badge(ready ? "passed" : "failed"));
+  byId("overview-live-status").replaceChildren(statusIndicator(live));
+  byId("overview-ready-status").replaceChildren(statusIndicator(ready));
   setConnection(ready);
+}
+
+function statusIndicator(ready) {
+  return create("span", `status-indicator ${ready ? "ready" : "down"}`, ready ? "正常" : "不可用");
 }
 
 async function boot() {
   document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => showView(button.dataset.view)));
   document.querySelectorAll("[data-view-target]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.viewTarget)));
   byId("open-create").addEventListener("click", () => showView("create"));
+  byId("overview-open-create").addEventListener("click", () => showView("create"));
   byId("refresh-runs").addEventListener("click", loadRuns);
   byId("refresh-detail").addEventListener("click", loadRunDetail);
   byId("refresh-health").addEventListener("click", loadHealth);

@@ -309,7 +309,7 @@ def test_ui_exposes_test_type_and_editable_request_body_workflow() -> None:
     assert 'id="format-request-body"' in page.text
     assert 'id="validate-request-body"' in page.text
     assert 'id="request-body-content"' in page.text
-    assert '/ui/assets/app.js?v=formal-console-v1' in page.text
+    assert '/ui/assets/app.js?v=light-console-v1' in page.text
     assert "renderSuiteOptions" in script.text
     assert "validateRequestBody" in script.text
     assert "request_body: requestBody" in script.text
@@ -323,7 +323,7 @@ def test_ui_exposes_formal_operations_console_landmarks() -> None:
     script = client.get("/ui/assets/app.js")
 
     assert page.status_code == script.status_code == 200
-    assert '/ui/assets/styles.css?v=formal-console-v1' in page.text
+    assert '/ui/assets/styles.css?v=light-console-v1' in page.text
     assert 'class="icon-sprite"' in page.text
     assert 'id="environment-label"' in page.text
     assert 'id="overview-total"' in page.text
@@ -335,6 +335,28 @@ def test_ui_exposes_formal_operations_console_landmarks() -> None:
     assert 'id="summary-suite"' in page.text
     assert "renderOverview" in script.text
     assert "updateExecutionSummary" in script.text
+
+
+def test_ui_exposes_light_console_navigation_and_real_data_views() -> None:
+    client = _client()
+
+    page = client.get("/ui/")
+    script = client.get("/ui/assets/app.js")
+
+    assert page.status_code == script.status_code == 200
+    assert '<meta name="color-scheme" content="light">' in page.text
+    assert '/ui/assets/styles.css?v=light-console-v1' in page.text
+    assert '/ui/assets/app.js?v=light-console-v1' in page.text
+    assert 'id="view-overview"' in page.text
+    assert 'id="overview-recent-body"' in page.text
+    assert 'id="view-suites"' in page.text
+    assert 'id="suite-catalog"' in page.text
+    assert "运行概览" in page.text
+    assert "运行任务" in page.text
+    assert "套件目录" in page.text
+    assert 'href="/docs"' in page.text
+    assert "renderOverviewRecent" in script.text
+    assert "renderSuiteCatalog" in script.text
 
 
 def test_ui_assets_are_included_in_the_installed_python_package() -> None:
