@@ -17,6 +17,7 @@ from quality_flow.runners.agent_eval_definition import (
     AgentEvalCase,
     AgentEvalDefinition,
     AgentEvalDefinitionError,
+    AgentExpectation,
 )
 from quality_flow.runners.base import (
     CaseResultData,
@@ -109,6 +110,7 @@ class AgentEvalRunner:
         latencies: list[float] = []
         token_total = 0
         tool_violation_count = 0
+        turn_count = 0
         timed_out = False
 
         with httpx.Client(
@@ -135,10 +137,10 @@ class AgentEvalRunner:
                 )
                 cases.append(outcome.case)
                 reports.append(outcome.report)
-                if outcome.executed:
-                    latencies.append(outcome.duration_ms)
+                latencies.extend(outcome.latencies)
                 token_total += outcome.token_total
                 tool_violation_count += int(outcome.tool_violation)
+                turn_count += outcome.turn_count
                 timed_out = outcome.timed_out
 
         summary = _case_summary(cases)
@@ -147,6 +149,7 @@ class AgentEvalRunner:
             latencies=latencies,
             token_total=token_total,
             tool_violation_count=tool_violation_count,
+            turn_count=turn_count,
         )
         gate = evaluate_functional_gate(summary, spec.gate_policy)
         finished_at = self._clock()
@@ -213,74 +216,183 @@ class AgentEvalRunner:
         heartbeat: Callable[[], None],
     ) -> "_CaseOutcome":
         case_started = self._monotonic()
-        deadline_limited_request = False
-        try:
-            prompt = render_template(eval_case.prompt, context)
-            if not isinstance(prompt, str) or not prompt.strip():
-                raise AgentEvalDefinitionError("rendered prompt must be non-empty text")
-            heartbeat()
-            remaining = max(deadline - self._monotonic(), 0.001)
-            deadline_limited_request = remaining <= definition.request_timeout_seconds
-            response = client.post(
-                definition.path,
-                json={"prompt": prompt},
-                timeout=min(definition.request_timeout_seconds, remaining),
-            )
-            duration_ms = (self._monotonic() - case_started) * 1000
-            response_body = _response_body(response)
-            reasons, tool_violation, token_total = _evaluate_response(
-                eval_case, response.status_code, response_body
-            )
-            status = "passed" if not reasons else "failed"
-            message = "; ".join(reasons) if reasons else None
-            return _CaseOutcome(
-                case=CaseResultData(
-                    node_id=f"agent_eval::{eval_case.case_id}",
-                    status=status,
-                    duration_ms=duration_ms,
-                    message=message,
-                ),
-                report={
-                    "id": eval_case.case_id,
-                    "name": eval_case.name,
-                    "status": status,
-                    "duration_ms": duration_ms,
-                    "message": message,
-                    "prompt": prompt,
-                    "response_status": response.status_code,
-                    "response": _bounded_body(_sanitize(response_body)),
-                },
-                duration_ms=duration_ms,
-                token_total=token_total,
-                tool_violation=tool_violation,
-            )
-        except httpx.TimeoutException as error:
-            duration_ms = (self._monotonic() - case_started) * 1000
-            if deadline_limited_request:
-                message = "Run deadline exceeded during Agent request"
-                return _error_outcome(
-                    eval_case,
-                    message,
-                    duration_ms,
-                    timed_out=True,
+        messages: list[dict[str, str]] = []
+        turn_reports: list[dict[str, Any]] = []
+        latencies: list[float] = []
+        actual_tool_sequence: list[str] = []
+        case_reasons: list[str] = []
+        token_total = 0
+        turn_count = 0
+        tool_violation = False
+        case_error = False
+        timed_out = False
+
+        for turn_index, turn in enumerate(eval_case.turns, start=1):
+            turn_started = self._monotonic()
+            prompt: str | None = None
+            try:
+                rendered = render_template(turn.prompt, context)
+                if not isinstance(rendered, str) or not rendered.strip():
+                    raise AgentEvalDefinitionError(
+                        "rendered prompt must be non-empty text"
+                    )
+                prompt = rendered
+                if self._monotonic() >= deadline:
+                    timed_out = True
+                    case_error = True
+                    message = "Run deadline exceeded before Agent request"
+                    turn_reports.append(
+                        _turn_error_report(turn_index, prompt, message, 0.0)
+                    )
+                    case_reasons.append(f"turn {turn_index}: {message}")
+                    break
+                heartbeat()
+                remaining = max(deadline - self._monotonic(), 0.001)
+                deadline_limited_request = (
+                    remaining <= definition.request_timeout_seconds
                 )
-            return _error_outcome(
-                eval_case,
-                f"Agent request timed out: {error}",
-                duration_ms,
+                if eval_case.legacy_prompt:
+                    payload: dict[str, Any] = {"prompt": prompt}
+                else:
+                    messages.append({"role": "user", "content": prompt})
+                    payload = {"messages": [dict(message) for message in messages]}
+                turn_count += 1
+                response = client.post(
+                    definition.path,
+                    json=payload,
+                    timeout=min(definition.request_timeout_seconds, remaining),
+                )
+                duration_ms = (self._monotonic() - turn_started) * 1000
+                latencies.append(duration_ms)
+                response_body = _response_body(response)
+                reasons, turn_tool_violation, turn_tokens = _evaluate_response(
+                    turn.expectation, response.status_code, response_body
+                )
+                token_total += turn_tokens
+                tool_violation = tool_violation or turn_tool_violation
+                valid_response = _valid_agent_response(response_body)
+                if valid_response:
+                    actual_tool_sequence.extend(
+                        call["name"] for call in response_body["tool_calls"]
+                    )
+                    if not eval_case.legacy_prompt:
+                        messages.append(
+                            {"role": "assistant", "content": response_body["answer"]}
+                        )
+                turn_status = "passed" if not reasons else "failed"
+                turn_message = "; ".join(reasons) if reasons else None
+                turn_reports.append(
+                    {
+                        "index": turn_index,
+                        "status": turn_status,
+                        "duration_ms": duration_ms,
+                        "message": turn_message,
+                        "prompt": prompt,
+                        "response_status": response.status_code,
+                        "response": _bounded_body(_sanitize(response_body)),
+                    }
+                )
+                case_reasons.extend(
+                    f"turn {turn_index}: {reason}" for reason in reasons
+                )
+                if not valid_response:
+                    break
+            except httpx.TimeoutException as error:
+                duration_ms = (self._monotonic() - turn_started) * 1000
+                latencies.append(duration_ms)
+                timed_out = deadline_limited_request
+                case_error = True
+                message = (
+                    "Run deadline exceeded during Agent request"
+                    if timed_out
+                    else f"Agent request timed out: {error}"
+                )
+                turn_reports.append(
+                    _turn_error_report(turn_index, prompt, message, duration_ms)
+                )
+                case_reasons.append(f"turn {turn_index}: {message}")
+                break
+            except httpx.HTTPError as error:
+                duration_ms = (self._monotonic() - turn_started) * 1000
+                latencies.append(duration_ms)
+                case_error = True
+                message = f"Agent request failed: {error}"
+                turn_reports.append(
+                    _turn_error_report(turn_index, prompt, message, duration_ms)
+                )
+                case_reasons.append(f"turn {turn_index}: {message}")
+                break
+            except (
+                AgentEvalDefinitionError,
+                WorkflowDefinitionError,
+                TypeError,
+                ValueError,
+            ) as error:
+                duration_ms = (self._monotonic() - turn_started) * 1000
+                case_error = True
+                message = f"Agent evaluation turn could not be rendered: {error}"
+                turn_reports.append(
+                    _turn_error_report(turn_index, prompt, message, duration_ms)
+                )
+                case_reasons.append(f"turn {turn_index}: {message}")
+                break
+
+        if not case_error:
+            actual_sequence = tuple(actual_tool_sequence)
+            if (
+                eval_case.expected_tool_sequence
+                and actual_sequence != eval_case.expected_tool_sequence
+            ):
+                case_reasons.append(
+                    "tool sequence mismatch: expected "
+                    f"{list(eval_case.expected_tool_sequence)}, got {actual_tool_sequence}"
+                )
+                tool_violation = True
+            if (
+                eval_case.max_total_tokens is not None
+                and token_total > eval_case.max_total_tokens
+            ):
+                case_reasons.append(
+                    "total token limit exceeded: "
+                    f"{token_total} > {eval_case.max_total_tokens}"
+                )
+
+        duration_ms = (self._monotonic() - case_started) * 1000
+        status = "error" if case_error else ("failed" if case_reasons else "passed")
+        message = "; ".join(case_reasons) if case_reasons else None
+        report: dict[str, Any] = {
+            "id": eval_case.case_id,
+            "name": eval_case.name,
+            "status": status,
+            "duration_ms": duration_ms,
+            "message": message,
+            "actual_tool_sequence": actual_tool_sequence,
+            "total_tokens": token_total,
+            "turns": turn_reports,
+        }
+        if eval_case.legacy_prompt and turn_reports:
+            first_turn = turn_reports[0]
+            report.update(
+                {
+                    "prompt": first_turn.get("prompt"),
+                    "response_status": first_turn.get("response_status"),
+                    "response": first_turn.get("response"),
+                }
             )
-        except httpx.HTTPError as error:
-            return _error_outcome(
-                eval_case,
-                f"Agent request failed: {error}",
-                (self._monotonic() - case_started) * 1000,
-            )
-        except (AgentEvalDefinitionError, WorkflowDefinitionError, TypeError, ValueError) as error:
-            return _error_outcome(
-                eval_case,
-                f"Agent evaluation case could not be rendered: {error}",
-                (self._monotonic() - case_started) * 1000,
-            )
+        return _CaseOutcome(
+            case=CaseResultData(
+                node_id=f"agent_eval::{eval_case.case_id}",
+                status=status,
+                duration_ms=duration_ms,
+                message=message,
+            ),
+            report=report,
+            latencies=tuple(latencies),
+            token_total=token_total,
+            tool_violation=tool_violation,
+            timed_out=timed_out,
+            turn_count=turn_count,
+        )
 
     def _write_report(
         self,
@@ -326,19 +438,19 @@ class _CaseOutcome:
         *,
         case: CaseResultData,
         report: dict[str, Any],
-        duration_ms: float,
+        latencies: tuple[float, ...] = (),
         token_total: int = 0,
         tool_violation: bool = False,
         timed_out: bool = False,
-        executed: bool = True,
+        turn_count: int = 0,
     ) -> None:
         self.case = case
         self.report = report
-        self.duration_ms = duration_ms
+        self.latencies = latencies
         self.token_total = token_total
         self.tool_violation = tool_violation
         self.timed_out = timed_out
-        self.executed = executed
+        self.turn_count = turn_count
 
 
 def _definition_path(argv: tuple[str, ...], workspace: Path) -> Path:
@@ -365,9 +477,8 @@ def _validated_base_url(value: Any) -> str:
 
 
 def _evaluate_response(
-    eval_case: AgentEvalCase, status_code: int, body: Any
+    expected: AgentExpectation, status_code: int, body: Any
 ) -> tuple[list[str], bool, int]:
-    expected = eval_case.expectation
     reasons: list[str] = []
     if status_code != expected.status:
         reasons.append(f"expected status {expected.status}, got {status_code}")
@@ -448,6 +559,7 @@ def _metrics(
     latencies: list[float],
     token_total: int,
     tool_violation_count: int,
+    turn_count: int,
 ) -> tuple[MetricData, ...]:
     total = max(summary.total, 1)
     ordered = sorted(latencies)
@@ -457,6 +569,7 @@ def _metrics(
         MetricData("tool_violation_rate", tool_violation_count / total, "ratio"),
         MetricData("agent_p95_latency_ms", p95_ms, "ms"),
         MetricData("total_tokens", token_total, "count"),
+        MetricData("agent_turn_count", turn_count, "count"),
     )
 
 
@@ -487,30 +600,19 @@ def _bounded_body(value: Any) -> Any:
     return f"[TRUNCATED body exceeded {_MAX_REPORT_BODY_BYTES} bytes]"
 
 
-def _error_outcome(
-    eval_case: AgentEvalCase,
+def _turn_error_report(
+    turn_index: int,
+    prompt: str | None,
     message: str,
     duration_ms: float,
-    *,
-    timed_out: bool = False,
-) -> _CaseOutcome:
-    return _CaseOutcome(
-        case=CaseResultData(
-            node_id=f"agent_eval::{eval_case.case_id}",
-            status="error",
-            duration_ms=duration_ms,
-            message=message,
-        ),
-        report={
-            "id": eval_case.case_id,
-            "name": eval_case.name,
-            "status": "error",
-            "duration_ms": duration_ms,
-            "message": message,
-        },
-        duration_ms=duration_ms,
-        timed_out=timed_out,
-    )
+) -> dict[str, Any]:
+    return {
+        "index": turn_index,
+        "status": "error",
+        "duration_ms": duration_ms,
+        "message": message,
+        "prompt": prompt,
+    }
 
 
 def _skipped_case(eval_case: AgentEvalCase, reason: str) -> CaseResultData:
