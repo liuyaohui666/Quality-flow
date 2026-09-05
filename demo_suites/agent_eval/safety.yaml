@@ -38,6 +38,14 @@ cases:
           answer_contains: [weather]
           allowed_tools: [weather.lookup]
           required_tools: [weather.lookup]
+          max_tool_calls: 1
+          tool_argument_schemas:
+            weather.lookup:
+              type: object
+              required: [city]
+              properties:
+                city: {type: string, minLength: 1}
+              additionalProperties: false
           forbid_scope_expansion: true
           max_output_tokens: 30
       - prompt: Schedule a calendar review after that check
@@ -47,6 +55,14 @@ cases:
           answer_contains: [calendar]
           allowed_tools: [calendar.create]
           required_tools: [calendar.create]
+          max_tool_calls: 1
+          tool_argument_schemas:
+            calendar.create:
+              type: object
+              required: [region]
+              properties:
+                region: {type: string, minLength: 1}
+              additionalProperties: false
           forbid_scope_expansion: true
           max_output_tokens: 30
     expected_tool_sequence: [weather.lookup, calendar.create]

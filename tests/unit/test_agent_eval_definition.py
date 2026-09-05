@@ -314,3 +314,13 @@ def test_registered_demo_agent_eval_covers_three_two_turn_conversations() -> Non
         "weather.lookup",
         "calendar.create",
     )
+    weather_expectation = definition.cases[1].turns[0].expectation
+    calendar_expectation = definition.cases[1].turns[1].expectation
+    assert weather_expectation.max_tool_calls == 1
+    assert weather_expectation.tool_argument_schemas["weather.lookup"][
+        "required"
+    ] == ["city"]
+    assert calendar_expectation.max_tool_calls == 1
+    assert calendar_expectation.tool_argument_schemas["calendar.create"][
+        "required"
+    ] == ["region"]

@@ -95,7 +95,7 @@ pytest/Locust 子进程获得最小环境；stdout/stderr 并发排空且有大�
 
 WorkflowRunner 读取仓库中预注册的可信 YAML，在同一 Attempt 内顺序执行 HTTP 步骤。它可以从 `request`、`parameters`、受控 `env` 和前序响应捕获值中渲染请求，并支持状态码、JSON 子集和 JSON Schema 断言；清理步骤在主流程失败后仍会按已捕获变量尽力执行。客户端仍不能提交 URL、命令或工作流正文。
 
-AgentEvalRunner 读取预注册评测集并调用结构化 Agent HTTP 接口。单轮样例继续发送 `prompt`；多轮样例逐轮发送完整 user/assistant `messages` 历史。它以规则测试预言检查 decision、回答片段、工具 allowlist/required set、scope expansion、单轮与会话 Token 上限，并校验跨轮工具调用顺序。样例可在同一 Run 中独立采样 1 至 10 次，每次从空历史开始；采样通过率衡量正确性，decision 序列与工具轨迹的众数占比衡量行为一致性，回答措辞不参与一致性比较。每个配置样例仍生成一个 CaseResult，逐采样、逐轮证据进入脱敏报告，同时记录用例/采样通过率、行为一致率、工具越权率、P95 延迟、Token 总量和执行轮数。单份定义最多安排 500 次 HTTP turn。当前本地靶场是确定性 Agent 模拟器，不是语言模型。
+AgentEvalRunner 读取预注册评测集并调用结构化 Agent HTTP 接口。单轮样例继续发送 `prompt`；多轮样例逐轮发送完整 user/assistant `messages` 历史。它以规则测试预言检查 decision、回答片段、工具 allowlist/required set、工具调用次数、工具参数的 Draft 2020-12 JSON Schema、scope expansion、单轮与会话 Token 上限，并校验跨轮工具调用顺序。参数失败信息只记录工具、调用序号、字段路径和校验关键字，不复制实际值。样例可在同一 Run 中独立采样 1 至 10 次，每次从空历史开始；采样通过率衡量正确性，decision 序列与工具轨迹的众数占比衡量行为一致性，回答措辞不参与一致性比较。每个配置样例仍生成一个 CaseResult，逐采样、逐轮证据进入脱敏报告，同时记录用例/采样通过率、行为一致率、工具违规率、P95 延迟、Token 总量和执行轮数。单份定义最多安排 500 次 HTTP turn。当前本地靶场是确定性 Agent 模拟器，不是语言模型。
 
 `restful-booker-api` 是一个可选的外部套件，请求参数固定为 `parameters: {}`。它运行针对公开 Restful Booker 部署的测试，被测后端不在本仓库。由于这是公开外部服务，网络可用性不是平台自身的可重复条件，因此不进入必跑 CI。QualityFlow 保存 JUnit/stdout/stderr；QualityFlow 不归档 Allure，独立原项目保留 Allure。
 
@@ -156,7 +156,7 @@ V1 使用 Compose/进程文本日志，不声称统一 JSON 结构化日志。Ru
 - Redis 无 HA，且不是权威状态源。
 - Locust 仅单用户、本地确定性靶场；无多节点压测。
 - Workflow 仅支持可信 YAML 的顺序 HTTP 步骤、捕获、断言与清理；无分支、循环、并行或可视化编排。
-- Agent Eval 支持单轮/多轮结构化规则评测、工具轨迹检查和有限重复采样稳定性；无真实 LLM、语义 judge、RAG 指标或统计置信区间。
+- Agent Eval 支持单轮/多轮结构化规则评测、工具名称/顺序/次数/参数契约和有限重复采样稳定性；无真实 LLM、语义 judge、RAG 指标或统计置信区间。
 - Artifact 仅本地 named volume；无删除、对象存储和 GC。
 - Python 依赖有版本范围，容器标签未按 digest 锁定；不是 bit-for-bit reproducible。
 - GitHub Actions 已在托管 Ubuntu Runner 上完成 quality/integration/e2e 三 Job 绿色验证，但只覆盖当前提交和学生规模边界。
