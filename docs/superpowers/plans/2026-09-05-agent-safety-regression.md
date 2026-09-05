@@ -30,5 +30,6 @@
 - [x] Document four payloads, expected failures, safety-policy behavior and the simulator limitation in `docs/agent-regression-guide.md`; link from README and update architecture/evidence notes.
 - [x] Run Ruff and the full unit suite; run real integration/e2e validation through CI (local Docker as available).
 - [x] Review diff for scope, backward compatibility and no unsafe effects.
-- [ ] Merge the verified branch into main, push and inspect all CI jobs.
-- [ ] Report verified counts, commit and CI link, with any remaining limitations.
+- [x] Prepare the reviewed, locally verified branch for merge and remote CI.
+
+The final delivery response records the pushed commit, remote CI result, verified counts and remaining limitations.
