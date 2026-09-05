@@ -9,7 +9,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 Sleep = Callable[[float], Awaitable[None]]
@@ -22,10 +22,32 @@ class ResourceInput(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
 
+class AgentMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2000)
+
+
 class AgentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    prompt: str = Field(min_length=1, max_length=2000)
+    prompt: str | None = Field(default=None, min_length=1, max_length=2000)
+    messages: tuple[AgentMessage, ...] | None = Field(
+        default=None, min_length=1, max_length=39
+    )
+
+    @model_validator(mode="after")
+    def validate_request_mode(self) -> "AgentRequest":
+        if (self.prompt is None) == (self.messages is None):
+            raise ValueError("exactly one of prompt or messages is required")
+        if self.messages is not None:
+            roles = [message.role for message in self.messages]
+            if roles[0] != "user" or roles[-1] != "user":
+                raise ValueError("conversation must start and end with a user message")
+            if any(current == previous for previous, current in zip(roles, roles[1:])):
+                raise ValueError("conversation roles must alternate")
+        return self
 
 
 def create_app(*, sleep: Sleep = asyncio.sleep) -> FastAPI:
@@ -95,12 +117,36 @@ def create_app(*, sleep: Sleep = asyncio.sleep) -> FastAPI:
 
     @target.post("/agent/respond")
     def agent_respond(body: AgentRequest) -> dict[str, object]:
-        prompt = body.prompt.casefold()
-        input_tokens = max(1, len(body.prompt.split()))
+        if body.prompt is not None:
+            latest_prompt = body.prompt
+            conversation_text = body.prompt
+        else:
+            assert body.messages is not None
+            latest_prompt = body.messages[-1].content
+            conversation_text = " ".join(
+                message.content for message in body.messages if message.role == "user"
+            )
+        prompt = latest_prompt.casefold()
+        conversation = conversation_text.casefold()
+        input_tokens = max(1, len(conversation_text.split()))
         if "ignore" in prompt and "delete" in prompt:
             decision = "refuse"
             answer = "I cannot expand scope or perform destructive admin actions."
             tool_calls: list[dict[str, object]] = []
+        elif "which region" in prompt and "hefei" in conversation:
+            decision = "answer"
+            answer = "Your selected deployment region is Hefei."
+            tool_calls = []
+        elif "remember" in prompt and "hefei" in prompt:
+            decision = "answer"
+            answer = "I remembered that your deployment region is Hefei."
+            tool_calls = []
+        elif "schedule" in prompt or "calendar" in prompt:
+            decision = "tool_call"
+            answer = "I will use the calendar service to schedule the review."
+            tool_calls = [
+                {"name": "calendar.create", "arguments": {"region": "Hefei"}}
+            ]
         elif "weather" in prompt:
             decision = "tool_call"
             answer = "I will use the weather service for Hefei."

@@ -165,3 +165,22 @@ def test_definition_rejects_unknown_fields_and_duplicate_case_ids(
     )
     with pytest.raises(AgentEvalDefinitionError, match="unique"):
         AgentEvalDefinition.from_yaml(_write(tmp_path, second_case))
+
+
+def test_registered_demo_agent_eval_covers_three_two_turn_conversations() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+
+    definition = AgentEvalDefinition.from_yaml(
+        project_root / "demo_suites" / "agent_eval" / "safety.yaml"
+    )
+
+    assert [case.case_id for case in definition.cases] == [
+        "context-memory",
+        "weather-then-calendar",
+        "injection-refusal",
+    ]
+    assert [len(case.turns) for case in definition.cases] == [2, 2, 2]
+    assert definition.cases[1].expected_tool_sequence == (
+        "weather.lookup",
+        "calendar.create",
+    )

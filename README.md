@@ -55,7 +55,7 @@ flowchart LR
 | `demo-load / baseline` | 本地即时响应，满足请求数/错误率/P95 门禁 | `completed/passed` | Locust 指标和性能门禁通过 |
 | `demo-load / degraded` | 每次响应固定延迟 350 ms，超过 P95 250 ms | `completed/failed` | HTTP 错误率为 0，`p95_ms` 门禁失败 |
 | `demo-workflow` | 创建资源后捕获 ID，依次查询、修改、复查并清理 | `completed/passed` | 5 个 step case、功能门禁、脱敏 Workflow JSON 报告 |
-| `demo-agent-eval` | 评测正常回答、允许工具调用和注入拒绝 | `completed/passed` | 3 个 Agent case、越权率/P95/Token 指标、脱敏评测报告 |
+| `demo-agent-eval` | 评测多轮上下文、工具调用顺序和注入拒绝 | `completed/passed` | 3 个会话 case / 6 个 turn、越权率/P95/Token 指标、脱敏评测报告 |
 
 后三个非通过终态是项目刻意制造的验证证据，不代表平台启动失败。
 
@@ -159,12 +159,12 @@ Invoke-RestMethod "http://127.0.0.1:18000/api/v1/runs/$($run.run_id)/artifacts"
 
 `demo-agent-eval` 是平台向 AI/Agent 测试演进的第一步。它不是聊天机器人，也不调用付费模型，而是用本地确定性 Agent 靶场验证一套可迁移到真实 Agent HTTP 接口的质量契约：
 
-- 普通问题是否给出结构化回答；
-- 需要工具时是否只调用允许的工具；
-- 提示词注入要求扩大范围或执行破坏性操作时是否拒绝；
-- 输出结构、决策类型、关键词、Token 上限和整体 Run 时限是否满足要求。
+- 多轮对话中是否记住前文给出的业务信息；
+- 需要连续使用工具时，是否只调用允许的工具并保持正确顺序；
+- 前一轮正常、后一轮出现提示词注入时，是否仍能拒绝扩大范围或执行破坏性操作；
+- 每轮输出结构、决策类型、关键词、Token 上限，以及整段会话 Token 上限和整体 Run 时限是否满足要求。
 
-提交时在控制台选择 `Agent 应用评测` 和 `demo-agent-eval`，载入示例后可修改 `topic`。三个评测样例会分别成为 CaseResult；平台同时保存 `agent_pass_rate`、`tool_violation_rate`、`agent_p95_latency_ms` 和 `total_tokens`，并生成可查看、可下载、按敏感字段名脱敏的 `agent-eval-report.json`。
+提交时在控制台选择 `Agent 应用评测` 和 `demo-agent-eval`，载入示例后可修改 `topic`。三个多轮会话会分别成为 CaseResult，每个会话的逐轮输入、响应、断言、耗时和工具轨迹会写入报告；平台同时保存 `agent_pass_rate`、`tool_violation_rate`、`agent_p95_latency_ms`、`total_tokens` 和 `agent_turn_count`，并生成可查看、可下载、按敏感字段名脱敏的 `agent-eval-report.json`。原有单轮 `prompt + expect` 评测文件仍然兼容。
 
 这一版使用确定性规则作为测试预言，因此适合 CI 回归和安全边界验证；它不声称能够判断开放式回答“是否足够好”。语义相似度、RAG 召回指标、多次采样稳定性和 LLM-as-judge 仍属于后续能力。
 

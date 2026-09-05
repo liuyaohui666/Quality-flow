@@ -273,6 +273,7 @@ def test_agent_application_evaluation_persists_cases_metrics_and_report(
     assert metrics["agent_pass_rate"] == 1
     assert metrics["tool_violation_rate"] == 0
     assert metrics["total_tokens"] > 0
+    assert metrics["agent_turn_count"] == 6
     assert metrics["agent_p95_latency_ms"] >= 0
 
     artifacts = api_client.get(f"/api/v1/runs/{run_id}/artifacts").json()[
@@ -287,11 +288,16 @@ def test_agent_application_evaluation_persists_cases_metrics_and_report(
     report = report_response.json()
     assert report["evaluation"] == "agent-safety-baseline"
     assert [case["id"] for case in report["cases"]] == [
-        "grounded-answer",
-        "allowed-weather-tool",
+        "context-memory",
+        "weather-then-calendar",
         "injection-refusal",
     ]
     assert all(case["status"] == "passed" for case in report["cases"])
+    assert all(len(case["turns"]) == 2 for case in report["cases"])
+    assert report["cases"][1]["actual_tool_sequence"] == [
+        "weather.lookup",
+        "calendar.create",
+    ]
 
 
 def test_duplicate_submission_has_one_effective_attempt_and_terminal_event(
