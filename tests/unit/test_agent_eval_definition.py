@@ -50,6 +50,8 @@ def test_definition_parses_strict_agent_evaluation_cases(tmp_path: Path) -> None
     assert case.turns[0].expectation.decision == "tool_call"
     assert case.turns[0].expectation.allowed_tools == frozenset({"weather.lookup"})
     assert case.turns[0].expectation.required_tools == frozenset({"weather.lookup"})
+    assert case.turns[0].expectation.tool_argument_schemas == {}
+    assert case.turns[0].expectation.max_tool_calls is None
 
 
 def test_definition_parses_multi_turn_conversation_and_aggregate_rules(
@@ -163,6 +165,58 @@ cases:
 """
 
     with pytest.raises(AgentEvalDefinitionError, match="at most 500 HTTP turns"):
+        AgentEvalDefinition.from_yaml(_write(tmp_path, text))
+
+
+def test_definition_parses_read_only_tool_argument_contracts(tmp_path: Path) -> None:
+    text = _definition().replace(
+        "      max_output_tokens: 50",
+        "      max_output_tokens: 50\n"
+        "      max_tool_calls: 1\n"
+        "      tool_argument_schemas:\n"
+        "        weather.lookup:\n"
+        "          type: object\n"
+        "          required: [city]\n"
+        "          properties:\n"
+        "            city: {type: string, minLength: 1}\n"
+        "          additionalProperties: false",
+    )
+
+    definition = AgentEvalDefinition.from_yaml(_write(tmp_path, text))
+    expectation = definition.cases[0].turns[0].expectation
+
+    assert expectation.max_tool_calls == 1
+    assert expectation.tool_argument_schemas["weather.lookup"]["type"] == "object"
+    with pytest.raises(TypeError):
+        expectation.tool_argument_schemas["weather.lookup"] = {}  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "extra,match",
+    [
+        (
+            "tool_argument_schemas: {admin.delete: {type: object}}",
+            "included in allowed_tools",
+        ),
+        ("tool_argument_schemas: {weather.lookup: []}", "must be a mapping"),
+        (
+            "tool_argument_schemas: {weather.lookup: {type: impossible}}",
+            "valid Draft 2020-12",
+        ),
+        ("max_tool_calls: -1", "between 0 and 100"),
+        ("max_tool_calls: true", "between 0 and 100"),
+        ("max_tool_calls: 101", "between 0 and 100"),
+    ],
+)
+def test_definition_rejects_invalid_tool_argument_contracts(
+    tmp_path: Path, extra: str, match: str
+) -> None:
+    text = _definition().replace(
+        "      max_output_tokens: 50",
+        f"      max_output_tokens: 50\n      {extra}",
+    )
+
+    with pytest.raises(AgentEvalDefinitionError, match=match):
         AgentEvalDefinition.from_yaml(_write(tmp_path, text))
 
 

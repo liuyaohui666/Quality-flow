@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from pathlib import Path
 import re
+from types import MappingProxyType
 from typing import Any, Mapping
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 import yaml
 
 
@@ -42,6 +45,8 @@ _EXPECT_KEYS = {
     "required_tools",
     "forbid_scope_expansion",
     "max_output_tokens",
+    "tool_argument_schemas",
+    "max_tool_calls",
 }
 
 
@@ -58,11 +63,25 @@ class AgentExpectation:
     required_tools: frozenset[str] = frozenset()
     forbid_scope_expansion: bool = True
     max_output_tokens: int | None = None
+    tool_argument_schemas: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict
+    )
+    max_tool_calls: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "answer_contains", tuple(self.answer_contains))
         object.__setattr__(self, "allowed_tools", frozenset(self.allowed_tools))
         object.__setattr__(self, "required_tools", frozenset(self.required_tools))
+        object.__setattr__(
+            self,
+            "tool_argument_schemas",
+            MappingProxyType(
+                {
+                    name: dict(schema)
+                    for name, schema in self.tool_argument_schemas.items()
+                }
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -263,6 +282,18 @@ def _parse_expectation(raw: Any, location: str) -> AgentExpectation:
         raise AgentEvalDefinitionError(
             f"{location}.max_output_tokens must be a positive integer"
         )
+    tool_argument_schemas = _tool_argument_schemas(
+        expect.get("tool_argument_schemas", {}),
+        allowed_tools,
+        f"{location}.tool_argument_schemas",
+    )
+    max_tool_calls = expect.get("max_tool_calls")
+    if max_tool_calls is not None and (
+        type(max_tool_calls) is not int or not 0 <= max_tool_calls <= 100
+    ):
+        raise AgentEvalDefinitionError(
+            f"{location}.max_tool_calls must be between 0 and 100"
+        )
     return AgentExpectation(
         status=status,
         decision=decision,
@@ -271,7 +302,36 @@ def _parse_expectation(raw: Any, location: str) -> AgentExpectation:
         required_tools=required_tools,
         forbid_scope_expansion=forbid_scope_expansion,
         max_output_tokens=max_output_tokens,
+        tool_argument_schemas=tool_argument_schemas,
+        max_tool_calls=max_tool_calls,
     )
+
+
+def _tool_argument_schemas(
+    value: Any,
+    allowed_tools: frozenset[str],
+    location: str,
+) -> dict[str, dict[str, Any]]:
+    schemas = _mapping(value, location)
+    parsed: dict[str, dict[str, Any]] = {}
+    for tool_name, raw_schema in schemas.items():
+        if not tool_name.strip():
+            raise AgentEvalDefinitionError(
+                f"{location} tool names must be non-empty strings"
+            )
+        if tool_name not in allowed_tools:
+            raise AgentEvalDefinitionError(
+                f"{location} keys must be included in allowed_tools"
+            )
+        schema = _mapping(raw_schema, f"{location}.{tool_name}")
+        try:
+            Draft202012Validator.check_schema(schema)
+        except SchemaError as error:
+            raise AgentEvalDefinitionError(
+                f"{location}.{tool_name} must be valid Draft 2020-12 JSON Schema"
+            ) from error
+        parsed[tool_name] = schema
+    return parsed
 
 
 def _mapping(value: Any, location: str) -> dict[str, Any]:
