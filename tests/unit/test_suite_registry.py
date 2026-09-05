@@ -161,6 +161,17 @@ def test_repository_registry_registers_local_dependent_workflow(
     ) == {"name": "Ada", "updated_name": "Grace"}
 
 
+def test_repository_registry_registers_local_agent_evaluation(
+    registry: SuiteRegistry,
+) -> None:
+    suite = registry.get("demo-agent-eval")
+
+    assert suite.runner_type == "agent_eval"
+    assert suite.test_type == "agent"
+    assert suite.argv == ("agent_eval", "safety.yaml")
+    assert suite.working_directory.name == "agent_eval"
+
+
 def test_restful_booker_request_body_contract_accepts_valid_business_json(
     registry: SuiteRegistry,
 ) -> None:

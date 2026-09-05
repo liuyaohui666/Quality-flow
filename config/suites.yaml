@@ -81,6 +81,32 @@ suites:
       max_failures: 0
       max_error_rate: 0.0
     source_revision: main
+  demo-agent-eval:
+    test_type: agent
+    runner_type: agent_eval
+    working_directory: demo_suites/agent_eval
+    argv:
+      - agent_eval
+      - safety.yaml
+    timeout_seconds: 30
+    allowed_parameters: {}
+    request_body:
+      required: false
+      schema:
+        type: object
+        additionalProperties: false
+        properties:
+          topic:
+            type: string
+            minLength: 1
+            maxLength: 200
+      example:
+        topic: quality engineering
+    gate_policy:
+      min_pass_rate: 1.0
+      max_failures: 0
+      max_error_rate: 0.0
+    source_revision: main
   restful-booker-api:
     test_type: api
     runner_type: pytest

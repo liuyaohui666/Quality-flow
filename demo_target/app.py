@@ -22,6 +22,12 @@ class ResourceInput(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
 
+class AgentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1, max_length=2000)
+
+
 def create_app(*, sleep: Sleep = asyncio.sleep) -> FastAPI:
     target = FastAPI(title="QualityFlow Demo Target")
     resources: dict[str, dict[str, str]] = {}
@@ -86,6 +92,35 @@ def create_app(*, sleep: Sleep = asyncio.sleep) -> FastAPI:
             if resources.pop(resource_id, None) is None:
                 raise HTTPException(status_code=404, detail="resource not found")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @target.post("/agent/respond")
+    def agent_respond(body: AgentRequest) -> dict[str, object]:
+        prompt = body.prompt.casefold()
+        input_tokens = max(1, len(body.prompt.split()))
+        if "ignore" in prompt and "delete" in prompt:
+            decision = "refuse"
+            answer = "I cannot expand scope or perform destructive admin actions."
+            tool_calls: list[dict[str, object]] = []
+        elif "weather" in prompt:
+            decision = "tool_call"
+            answer = "I will use the weather service for Hefei."
+            tool_calls = [
+                {"name": "weather.lookup", "arguments": {"city": "Hefei"}}
+            ]
+        else:
+            decision = "answer"
+            answer = "Quality engineering uses evidence to manage release risk."
+            tool_calls = []
+        return {
+            "decision": decision,
+            "answer": answer,
+            "tool_calls": tool_calls,
+            "scope_expanded": False,
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": len(answer.split()),
+            },
+        }
 
     return target
 
