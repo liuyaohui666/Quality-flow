@@ -70,6 +70,33 @@ cases:
 """
 
 
+def _sampling_definition(
+    *,
+    sample_count: int = 3,
+    min_sample_pass_rate: float = 1.0,
+    min_behavior_consistency_rate: float = 1.0,
+) -> str:
+    return f"""
+version: 1
+name: stability-agent-eval
+base_url: "{{{{ env.QUALITY_FLOW_TARGET_URL }}}}"
+path: /agent/respond
+request_timeout_seconds: 2
+cases:
+  - id: stable-answer
+    name: Answer consistently
+    prompt: Explain quality briefly
+    sample_count: {sample_count}
+    min_sample_pass_rate: {min_sample_pass_rate}
+    min_behavior_consistency_rate: {min_behavior_consistency_rate}
+    expect:
+      status: 200
+      decision: answer
+      answer_contains: [quality]
+      allowed_tools: []
+"""
+
+
 def _spec(tmp_path: Path, *, timeout: float = 10) -> ExecutionSpec:
     return ExecutionSpec(
         argv=("agent_eval", "agent-eval.yaml"),
@@ -145,6 +172,9 @@ def test_runner_evaluates_cases_and_emits_metrics_and_sanitized_report(
     assert report["cases"][0]["prompt"] == "Explain quality engineering briefly"
     assert report["cases"][0]["response"]["access_token"] == "[REDACTED]"
     assert "must-not-leak" not in json.dumps(report)
+    assert len(report["cases"][0]["samples"]) == 1
+    assert report["cases"][0]["sample_pass_rate"] == 1
+    assert report["cases"][0]["behavior_consistency_rate"] == 1
 
 
 def test_runner_sends_full_history_and_accepts_ordered_tool_trajectory(
@@ -322,3 +352,156 @@ def test_runner_marks_invalid_definition_as_infrastructure_failure(
 
     assert result.attempt_status is AttemptStatus.INFRA_FAILED
     assert result.failure_kind == "agent_eval_configuration"
+
+
+def test_runner_repeats_conversation_with_fresh_history_and_emits_stability_metrics(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        _conversation_definition().replace(
+            "    expected_tool_sequence:",
+            "    sample_count: 2\n"
+            "    min_sample_pass_rate: 1\n"
+            "    min_behavior_consistency_rate: 1\n"
+            "    expected_tool_sequence:",
+        ),
+    )
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        latest = payload["messages"][-1]["content"]
+        tool_name = (
+            "weather.lookup"
+            if "weather" in latest.casefold()
+            else "calendar.create"
+        )
+        return _response(
+            decision="tool_call",
+            answer=f"The {tool_name.split('.')[0]} tool completed",
+            tools=[{"name": tool_name, "arguments": {}}],
+        )
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(handler),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.PASSED
+    assert [len(payload["messages"]) for payload in requests] == [1, 3, 1, 3]
+    metrics = {metric.name: metric.value for metric in result.metrics}
+    assert metrics["agent_sample_count"] == 2
+    assert metrics["agent_sample_pass_rate"] == 1
+    assert metrics["agent_behavior_consistency_rate"] == 1
+    assert metrics["agent_turn_count"] == 4
+    report = json.loads(result.artifacts[0].source_path.read_text(encoding="utf-8"))
+    case_report = report["cases"][0]
+    assert len(case_report["samples"]) == 2
+    assert all(sample["status"] == "passed" for sample in case_report["samples"])
+    assert case_report["sample_pass_rate"] == 1
+    assert case_report["behavior_consistency_rate"] == 1
+
+
+def test_runner_allows_explicit_partial_sample_pass_rate(tmp_path: Path) -> None:
+    _write(tmp_path, _sampling_definition(min_sample_pass_rate=0.66))
+    answers = iter(("Quality evidence", "wrong answer", "Quality evidence"))
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(
+            lambda _request: _response(decision="answer", answer=next(answers))
+        ),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.PASSED
+    report = json.loads(result.artifacts[0].source_path.read_text(encoding="utf-8"))
+    case_report = report["cases"][0]
+    assert [sample["status"] for sample in case_report["samples"]] == [
+        "passed",
+        "failed",
+        "passed",
+    ]
+    assert case_report["sample_pass_rate"] == 2 / 3
+    assert case_report["behavior_consistency_rate"] == 1
+
+
+def test_runner_fails_when_agent_behavior_is_inconsistent(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        _sampling_definition(
+            min_sample_pass_rate=0.66,
+            min_behavior_consistency_rate=1,
+        ),
+    )
+    decisions = iter(("answer", "refuse", "answer"))
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(
+            lambda _request: _response(
+                decision=next(decisions), answer="Quality evidence"
+            )
+        ),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.TEST_FAILED
+    assert "behavior consistency" in (result.case_results[0].message or "")
+    metrics = {metric.name: metric.value for metric in result.metrics}
+    assert metrics["agent_sample_pass_rate"] == 2 / 3
+    assert metrics["agent_behavior_consistency_rate"] == 2 / 3
+
+
+def test_runner_detects_tool_trajectory_instability_even_when_samples_pass(
+    tmp_path: Path,
+) -> None:
+    definition = _sampling_definition().replace(
+        "      decision: answer\n"
+        "      answer_contains: [quality]\n"
+        "      allowed_tools: []",
+        "      decision: tool_call\n"
+        "      answer_contains: [quality]\n"
+        "      allowed_tools: [weather.lookup, calendar.create]",
+    )
+    _write(tmp_path, definition)
+    tools = iter(("weather.lookup", "calendar.create", "weather.lookup"))
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(
+            lambda _request: _response(
+                decision="tool_call",
+                answer="Quality evidence",
+                tools=[{"name": next(tools), "arguments": {}}],
+            )
+        ),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.TEST_FAILED
+    metrics = {metric.name: metric.value for metric in result.metrics}
+    assert metrics["agent_sample_pass_rate"] == 1
+    assert metrics["agent_behavior_consistency_rate"] == 2 / 3
+
+
+def test_runner_stops_remaining_samples_when_run_deadline_is_exhausted(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, _sampling_definition())
+
+    def times_out(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("budget exhausted", request=request)
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(times_out),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path, timeout=1), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.TIMED_OUT
+    report = json.loads(result.artifacts[0].source_path.read_text(encoding="utf-8"))
+    assert len(report["cases"][0]["samples"]) == 1

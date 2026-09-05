@@ -111,6 +111,10 @@ class AgentEvalRunner:
         token_total = 0
         tool_violation_count = 0
         turn_count = 0
+        sample_count = 0
+        sample_passed = 0
+        consistency_numerator = 0
+        consistency_denominator = 0
         timed_out = False
 
         with httpx.Client(
@@ -141,6 +145,10 @@ class AgentEvalRunner:
                 token_total += outcome.token_total
                 tool_violation_count += int(outcome.tool_violation)
                 turn_count += outcome.turn_count
+                sample_count += outcome.sample_count
+                sample_passed += outcome.sample_passed
+                consistency_numerator += outcome.consistency_numerator
+                consistency_denominator += outcome.consistency_denominator
                 timed_out = outcome.timed_out
 
         summary = _case_summary(cases)
@@ -150,6 +158,10 @@ class AgentEvalRunner:
             token_total=token_total,
             tool_violation_count=tool_violation_count,
             turn_count=turn_count,
+            sample_count=sample_count,
+            sample_passed=sample_passed,
+            consistency_numerator=consistency_numerator,
+            consistency_denominator=consistency_denominator,
         )
         gate = evaluate_functional_gate(summary, spec.gate_policy)
         finished_at = self._clock()
@@ -216,10 +228,132 @@ class AgentEvalRunner:
         heartbeat: Callable[[], None],
     ) -> "_CaseOutcome":
         case_started = self._monotonic()
+        samples: list[_SampleOutcome] = []
+        timed_out = False
+
+        for sample_index in range(1, eval_case.sample_count + 1):
+            if self._monotonic() >= deadline:
+                timed_out = True
+                break
+            sample = self._run_sample(
+                eval_case,
+                client=client,
+                definition=definition,
+                context=context,
+                deadline=deadline,
+                heartbeat=heartbeat,
+            )
+            sample.report["index"] = sample_index
+            samples.append(sample)
+            if sample.timed_out:
+                timed_out = True
+                break
+
+        executed = len(samples)
+        passed = sum(sample.status == "passed" for sample in samples)
+        pass_rate = passed / executed if executed else 0.0
+        completed_signatures = [
+            sample.behavior_signature
+            for sample in samples
+            if sample.status != "error"
+        ]
+        modal_count = max(
+            (
+                completed_signatures.count(signature)
+                for signature in set(completed_signatures)
+            ),
+            default=0,
+        )
+        consistency_rate = (
+            modal_count / len(completed_signatures) if completed_signatures else 0.0
+        )
+        reasons: list[str] = []
+        if eval_case.sample_count == 1 and samples and samples[0].report.get("message"):
+            reasons.append(str(samples[0].report["message"]))
+        if pass_rate < eval_case.min_sample_pass_rate:
+            reasons.append(
+                "sample pass rate below threshold: "
+                f"{pass_rate:.3f} < {eval_case.min_sample_pass_rate:.3f}"
+            )
+        if consistency_rate < eval_case.min_behavior_consistency_rate:
+            reasons.append(
+                "behavior consistency below threshold: "
+                f"{consistency_rate:.3f} < "
+                f"{eval_case.min_behavior_consistency_rate:.3f}"
+            )
+        if timed_out:
+            reasons.append("Run deadline exceeded")
+
+        status = "error" if timed_out else ("failed" if reasons else "passed")
+        message = "; ".join(reasons) if reasons else None
+        duration_ms = (self._monotonic() - case_started) * 1000
+        report: dict[str, Any] = {
+            "id": eval_case.case_id,
+            "name": eval_case.name,
+            "status": status,
+            "duration_ms": duration_ms,
+            "message": message,
+            "sample_count": eval_case.sample_count,
+            "executed_sample_count": executed,
+            "min_sample_pass_rate": eval_case.min_sample_pass_rate,
+            "sample_pass_rate": pass_rate,
+            "min_behavior_consistency_rate": (
+                eval_case.min_behavior_consistency_rate
+            ),
+            "behavior_consistency_rate": consistency_rate,
+            "samples": [sample.report for sample in samples],
+        }
+        if eval_case.sample_count == 1 and samples:
+            sample_report = samples[0].report
+            for key in (
+                "actual_tool_sequence",
+                "decision_sequence",
+                "total_tokens",
+                "turns",
+                "prompt",
+                "response_status",
+                "response",
+            ):
+                if key in sample_report:
+                    report[key] = sample_report[key]
+
+        return _CaseOutcome(
+            case=CaseResultData(
+                node_id=f"agent_eval::{eval_case.case_id}",
+                status=status,
+                duration_ms=duration_ms,
+                message=message,
+            ),
+            report=report,
+            latencies=tuple(
+                latency for sample in samples for latency in sample.latencies
+            ),
+            token_total=sum(sample.token_total for sample in samples),
+            tool_violation=any(sample.tool_violation for sample in samples),
+            timed_out=timed_out,
+            turn_count=sum(sample.turn_count for sample in samples),
+            sample_count=executed,
+            sample_passed=passed,
+            consistency_numerator=modal_count,
+            consistency_denominator=len(completed_signatures),
+        )
+
+    def _run_sample(
+        self,
+        eval_case: AgentEvalCase,
+        *,
+        client: httpx.Client,
+        definition: AgentEvalDefinition,
+        context: Mapping[str, Any],
+        deadline: float,
+        heartbeat: Callable[[], None],
+    ) -> "_SampleOutcome":
+        case_started = self._monotonic()
         messages: list[dict[str, str]] = []
         turn_reports: list[dict[str, Any]] = []
         latencies: list[float] = []
         actual_tool_sequence: list[str] = []
+        decision_sequence: list[str] = []
         case_reasons: list[str] = []
         token_total = 0
         turn_count = 0
@@ -272,6 +406,7 @@ class AgentEvalRunner:
                 tool_violation = tool_violation or turn_tool_violation
                 valid_response = _valid_agent_response(response_body)
                 if valid_response:
+                    decision_sequence.append(response_body["decision"])
                     actual_tool_sequence.extend(
                         call["name"] for call in response_body["tool_calls"]
                     )
@@ -367,6 +502,7 @@ class AgentEvalRunner:
             "duration_ms": duration_ms,
             "message": message,
             "actual_tool_sequence": actual_tool_sequence,
+            "decision_sequence": decision_sequence,
             "total_tokens": token_total,
             "turns": turn_reports,
         }
@@ -379,19 +515,18 @@ class AgentEvalRunner:
                     "response": first_turn.get("response"),
                 }
             )
-        return _CaseOutcome(
-            case=CaseResultData(
-                node_id=f"agent_eval::{eval_case.case_id}",
-                status=status,
-                duration_ms=duration_ms,
-                message=message,
-            ),
+        return _SampleOutcome(
+            status=status,
             report=report,
             latencies=tuple(latencies),
             token_total=token_total,
             tool_violation=tool_violation,
             timed_out=timed_out,
             turn_count=turn_count,
+            behavior_signature=(
+                tuple(decision_sequence),
+                tuple(actual_tool_sequence),
+            ),
         )
 
     def _write_report(
@@ -443,6 +578,10 @@ class _CaseOutcome:
         tool_violation: bool = False,
         timed_out: bool = False,
         turn_count: int = 0,
+        sample_count: int = 0,
+        sample_passed: int = 0,
+        consistency_numerator: int = 0,
+        consistency_denominator: int = 0,
     ) -> None:
         self.case = case
         self.report = report
@@ -451,6 +590,33 @@ class _CaseOutcome:
         self.tool_violation = tool_violation
         self.timed_out = timed_out
         self.turn_count = turn_count
+        self.sample_count = sample_count
+        self.sample_passed = sample_passed
+        self.consistency_numerator = consistency_numerator
+        self.consistency_denominator = consistency_denominator
+
+
+class _SampleOutcome:
+    def __init__(
+        self,
+        *,
+        status: str,
+        report: dict[str, Any],
+        latencies: tuple[float, ...] = (),
+        token_total: int = 0,
+        tool_violation: bool = False,
+        timed_out: bool = False,
+        turn_count: int = 0,
+        behavior_signature: tuple[tuple[str, ...], tuple[str, ...]] = ((), ()),
+    ) -> None:
+        self.status = status
+        self.report = report
+        self.latencies = latencies
+        self.token_total = token_total
+        self.tool_violation = tool_violation
+        self.timed_out = timed_out
+        self.turn_count = turn_count
+        self.behavior_signature = behavior_signature
 
 
 def _definition_path(argv: tuple[str, ...], workspace: Path) -> Path:
@@ -560,6 +726,10 @@ def _metrics(
     token_total: int,
     tool_violation_count: int,
     turn_count: int,
+    sample_count: int,
+    sample_passed: int,
+    consistency_numerator: int,
+    consistency_denominator: int,
 ) -> tuple[MetricData, ...]:
     total = max(summary.total, 1)
     ordered = sorted(latencies)
@@ -570,6 +740,19 @@ def _metrics(
         MetricData("agent_p95_latency_ms", p95_ms, "ms"),
         MetricData("total_tokens", token_total, "count"),
         MetricData("agent_turn_count", turn_count, "count"),
+        MetricData("agent_sample_count", sample_count, "count"),
+        MetricData(
+            "agent_sample_pass_rate",
+            sample_passed / sample_count if sample_count else 0.0,
+            "ratio",
+        ),
+        MetricData(
+            "agent_behavior_consistency_rate",
+            consistency_numerator / consistency_denominator
+            if consistency_denominator
+            else 0.0,
+            "ratio",
+        ),
     )
 
 
