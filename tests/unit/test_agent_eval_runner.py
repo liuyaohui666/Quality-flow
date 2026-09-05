@@ -97,6 +97,36 @@ cases:
 """
 
 
+def _tool_contract_definition(*, sample_count: int = 1) -> str:
+    return f"""
+version: 1
+name: tool-contract-eval
+base_url: "{{{{ env.QUALITY_FLOW_TARGET_URL }}}}"
+path: /agent/respond
+request_timeout_seconds: 2
+cases:
+  - id: weather-contract
+    name: Weather arguments follow the contract
+    prompt: Weather in Hefei
+    sample_count: {sample_count}
+    min_sample_pass_rate: 0.66
+    expect:
+      status: 200
+      decision: tool_call
+      answer_contains: [weather]
+      allowed_tools: [weather.lookup]
+      required_tools: [weather.lookup]
+      max_tool_calls: 1
+      tool_argument_schemas:
+        weather.lookup:
+          type: object
+          required: [city]
+          properties:
+            city: {{type: string, minLength: 1}}
+          additionalProperties: false
+"""
+
+
 def _spec(tmp_path: Path, *, timeout: float = 10) -> ExecutionSpec:
     return ExecutionSpec(
         argv=("agent_eval", "agent-eval.yaml"),
@@ -505,3 +535,114 @@ def test_runner_stops_remaining_samples_when_run_deadline_is_exhausted(
     assert result.attempt_status is AttemptStatus.TIMED_OUT
     report = json.loads(result.artifacts[0].source_path.read_text(encoding="utf-8"))
     assert len(report["cases"][0]["samples"]) == 1
+
+
+def test_runner_accepts_tool_arguments_that_match_registered_schema(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, _tool_contract_definition())
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(
+            lambda _request: _response(
+                decision="tool_call",
+                answer="The weather is ready",
+                tools=[
+                    {
+                        "name": "weather.lookup",
+                        "arguments": {"city": "Hefei"},
+                    }
+                ],
+            )
+        ),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.PASSED
+    metrics = {metric.name: metric.value for metric in result.metrics}
+    assert metrics["tool_violation_rate"] == 0
+
+
+def test_runner_rejects_tool_arguments_without_exposing_rejected_values(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, _tool_contract_definition())
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(
+            lambda _request: _response(
+                decision="tool_call",
+                answer="The weather is ready",
+                tools=[
+                    {
+                        "name": "weather.lookup",
+                        "arguments": {"city": 12345, "secret_note": "do-not-log"},
+                    }
+                ],
+            )
+        ),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.TEST_FAILED
+    message = result.case_results[0].message or ""
+    assert "weather.lookup call 1 arguments violate schema" in message
+    assert "type" in message
+    assert "additionalProperties" in message
+    assert "12345" not in message
+    assert "do-not-log" not in message
+    metrics = {metric.name: metric.value for metric in result.metrics}
+    assert metrics["tool_violation_rate"] == 1
+
+
+def test_runner_rejects_more_tool_calls_than_the_turn_contract_allows(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, _tool_contract_definition())
+    call = {"name": "weather.lookup", "arguments": {"city": "Hefei"}}
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(
+            lambda _request: _response(
+                decision="tool_call",
+                answer="The weather is ready",
+                tools=[call, call],
+            )
+        ),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.TEST_FAILED
+    assert "tool call limit exceeded: 2 > 1" in (
+        result.case_results[0].message or ""
+    )
+
+
+def test_tool_contract_failures_contribute_to_sample_pass_rate(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, _tool_contract_definition(sample_count=3))
+    arguments = iter(({}, {"city": "Hefei"}, {"city": "Hefei"}))
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(
+            lambda _request: _response(
+                decision="tool_call",
+                answer="The weather is ready",
+                tools=[
+                    {"name": "weather.lookup", "arguments": next(arguments)}
+                ],
+            )
+        ),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.PASSED
+    metrics = {metric.name: metric.value for metric in result.metrics}
+    assert metrics["agent_sample_pass_rate"] == 2 / 3
+    assert metrics["agent_behavior_consistency_rate"] == 1
+    assert metrics["tool_violation_rate"] == 1

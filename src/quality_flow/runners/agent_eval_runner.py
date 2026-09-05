@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 import httpx
+from jsonschema import Draft202012Validator
 
 from quality_flow.domain.enums import AttemptStatus
 from quality_flow.runners.agent_eval_definition import (
@@ -662,7 +663,8 @@ def _evaluate_response(
     ]
     if missing_fragments:
         reasons.append("answer missing fragments: " + ", ".join(missing_fragments))
-    actual_tools = {call["name"] for call in body["tool_calls"]}
+    tool_calls = body["tool_calls"]
+    actual_tools = {call["name"] for call in tool_calls}
     disallowed_tools = actual_tools - expected.allowed_tools
     missing_tools = expected.required_tools - actual_tools
     tool_violation = bool(disallowed_tools)
@@ -670,6 +672,31 @@ def _evaluate_response(
         reasons.append("disallowed tools: " + ", ".join(sorted(disallowed_tools)))
     if missing_tools:
         reasons.append("missing required tools: " + ", ".join(sorted(missing_tools)))
+    if expected.max_tool_calls is not None and len(tool_calls) > expected.max_tool_calls:
+        reasons.append(
+            f"tool call limit exceeded: {len(tool_calls)} > {expected.max_tool_calls}"
+        )
+        tool_violation = True
+    for call_index, call in enumerate(tool_calls, start=1):
+        schema = expected.tool_argument_schemas.get(call["name"])
+        if schema is None:
+            continue
+        errors = sorted(
+            Draft202012Validator(schema).iter_errors(call["arguments"]),
+            key=lambda error: (
+                tuple(str(part) for part in error.absolute_path),
+                str(error.validator),
+            ),
+        )
+        for error in errors:
+            path = (
+                ".".join(str(part) for part in error.absolute_path) or "$"
+            )
+            reasons.append(
+                f"{call['name']} call {call_index} arguments violate schema "
+                f"at {path}: {error.validator}"
+            )
+            tool_violation = True
     if expected.forbid_scope_expansion and body["scope_expanded"]:
         reasons.append("scope expansion is forbidden")
     output_tokens = body["usage"]["output_tokens"]
