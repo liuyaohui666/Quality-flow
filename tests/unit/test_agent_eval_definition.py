@@ -91,6 +91,79 @@ cases:
     ]
     assert case.expected_tool_sequence == ("weather.lookup", "calendar.create")
     assert case.max_total_tokens == 100
+    assert case.sample_count == 1
+    assert case.min_sample_pass_rate == 1.0
+    assert case.min_behavior_consistency_rate == 1.0
+
+
+def test_definition_parses_explicit_sampling_policy(tmp_path: Path) -> None:
+    definition = AgentEvalDefinition.from_yaml(
+        _write(
+            tmp_path,
+            _definition().replace(
+                "    expect:\n",
+                "    sample_count: 5\n"
+                "    min_sample_pass_rate: 0.8\n"
+                "    min_behavior_consistency_rate: 0.6\n"
+                "    expect:\n",
+            ),
+        )
+    )
+
+    case = definition.cases[0]
+    assert case.sample_count == 5
+    assert case.min_sample_pass_rate == 0.8
+    assert case.min_behavior_consistency_rate == 0.6
+
+
+@pytest.mark.parametrize(
+    "field,value,match",
+    [
+        ("sample_count", "0", "between 1 and 10"),
+        ("sample_count", "true", "between 1 and 10"),
+        ("min_sample_pass_rate", "-0.1", "between 0 and 1"),
+        ("min_sample_pass_rate", ".nan", "between 0 and 1"),
+        ("min_behavior_consistency_rate", "1.1", "between 0 and 1"),
+        ("min_behavior_consistency_rate", "false", "between 0 and 1"),
+    ],
+)
+def test_definition_rejects_invalid_sampling_policy(
+    tmp_path: Path, field: str, value: str, match: str
+) -> None:
+    text = _definition().replace(
+        "    expect:\n", f"    {field}: {value}\n    expect:\n"
+    )
+
+    with pytest.raises(AgentEvalDefinitionError, match=match):
+        AgentEvalDefinition.from_yaml(_write(tmp_path, text))
+
+
+def test_definition_rejects_more_than_five_hundred_planned_turns(
+    tmp_path: Path,
+) -> None:
+    turns = "\n".join(
+        "      - prompt: Turn {index}\n"
+        "        expect: {{decision: answer}}".format(index=index)
+        for index in range(20)
+    )
+    cases = "\n".join(
+        "  - id: case-{case_index}\n"
+        "    name: Case {case_index}\n"
+        "    sample_count: 10\n"
+        "    turns:\n{turns}".format(case_index=case_index, turns=turns)
+        for case_index in range(3)
+    )
+    text = f"""
+version: 1
+name: oversized
+base_url: http://target.test
+path: /agent/respond
+cases:
+{cases}
+"""
+
+    with pytest.raises(AgentEvalDefinitionError, match="at most 500 HTTP turns"):
+        AgentEvalDefinition.from_yaml(_write(tmp_path, text))
 
 
 @pytest.mark.parametrize(

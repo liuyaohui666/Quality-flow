@@ -29,6 +29,9 @@ _CASE_KEYS = {
     "turns",
     "expected_tool_sequence",
     "max_total_tokens",
+    "sample_count",
+    "min_sample_pass_rate",
+    "min_behavior_consistency_rate",
 }
 _TURN_KEYS = {"prompt", "expect"}
 _EXPECT_KEYS = {
@@ -76,6 +79,9 @@ class AgentEvalCase:
     legacy_prompt: bool
     expected_tool_sequence: tuple[str, ...] = ()
     max_total_tokens: int | None = None
+    sample_count: int = 1
+    min_sample_pass_rate: float = 1.0
+    min_behavior_consistency_rate: float = 1.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "turns", tuple(self.turns))
@@ -130,6 +136,13 @@ class AgentEvalDefinition:
         )
         if len({case.case_id for case in cases}) != len(cases):
             raise AgentEvalDefinitionError("Agent evaluation case ids must be unique")
+        planned_turns = sum(
+            case.sample_count * len(case.turns) for case in cases
+        )
+        if planned_turns > 500:
+            raise AgentEvalDefinitionError(
+                "Agent evaluation may schedule at most 500 HTTP turns"
+            )
         return cls(
             name=name,
             base_url=base_url,
@@ -181,6 +194,19 @@ def _parse_case(raw: Any, location: str) -> AgentEvalCase:
         raise AgentEvalDefinitionError(
             f"{location}.max_total_tokens must be a positive integer"
         )
+    sample_count = case.get("sample_count", 1)
+    if type(sample_count) is not int or not 1 <= sample_count <= 10:
+        raise AgentEvalDefinitionError(
+            f"{location}.sample_count must be between 1 and 10"
+        )
+    min_sample_pass_rate = _ratio(
+        case.get("min_sample_pass_rate", 1.0),
+        f"{location}.min_sample_pass_rate",
+    )
+    min_behavior_consistency_rate = _ratio(
+        case.get("min_behavior_consistency_rate", 1.0),
+        f"{location}.min_behavior_consistency_rate",
+    )
     return AgentEvalCase(
         case_id=case_id,
         name=name,
@@ -188,6 +214,9 @@ def _parse_case(raw: Any, location: str) -> AgentEvalCase:
         legacy_prompt=has_legacy,
         expected_tool_sequence=expected_tool_sequence,
         max_total_tokens=max_total_tokens,
+        sample_count=sample_count,
+        min_sample_pass_rate=min_sample_pass_rate,
+        min_behavior_consistency_rate=min_behavior_consistency_rate,
     )
 
 
@@ -273,6 +302,17 @@ def _identifier(value: Any, location: str) -> str:
     if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
         raise AgentEvalDefinitionError(f"{location} must be a safe identifier")
     return value
+
+
+def _ratio(value: Any, location: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or not 0 <= float(value) <= 1
+    ):
+        raise AgentEvalDefinitionError(f"{location} must be between 0 and 1")
+    return float(value)
 
 
 def _text_list(value: Any, location: str) -> tuple[str, ...]:
