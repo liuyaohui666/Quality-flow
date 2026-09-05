@@ -7,6 +7,7 @@ import time
 import pytest
 
 from quality_flow.application.worker import _PostRunLeaseKeeper
+from quality_flow.runners.agent_eval_runner import AgentEvalRunner
 from quality_flow.runners.workflow_runner import WorkflowRunner
 from quality_flow.worker import tasks as worker_tasks
 
@@ -144,6 +145,23 @@ def test_default_worker_registers_workflow_with_only_the_target_environment(
     monkeypatch.setattr(
         worker_tasks, "make_session_factory", lambda _engine: object()
     )
+    worker_tasks.build_default_worker.cache_clear()
+
+
+def test_default_worker_registers_agent_eval_with_only_target_environment(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("QUALITY_FLOW_TARGET_URL", "http://demo-target:8001")
+    monkeypatch.setenv("SECRET_TOKEN", "must-not-be-forwarded")
+    worker_tasks.build_default_worker.cache_clear()
+
+    worker = worker_tasks.build_default_worker()
+    runner = worker._runners["agent_eval"]
+
+    assert isinstance(runner, AgentEvalRunner)
+    assert runner._environment == {
+        "QUALITY_FLOW_TARGET_URL": "http://demo-target:8001"
+    }
     worker_tasks.build_default_worker.cache_clear()
 
     worker = worker_tasks.build_default_worker()

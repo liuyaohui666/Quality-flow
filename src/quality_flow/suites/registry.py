@@ -88,7 +88,7 @@ class RequestBodyDefinition:
 @dataclass(frozen=True)
 class SuiteDefinition:
     suite_id: str
-    runner_type: Literal["pytest", "locust", "workflow"]
+    runner_type: Literal["pytest", "locust", "workflow", "agent_eval"]
     working_directory: Path
     argv: tuple[str, ...]
     timeout_seconds: int
@@ -96,7 +96,7 @@ class SuiteDefinition:
     gate_policy: GatePolicy
     retry_policy: RetryPolicy
     source_revision: str
-    test_type: Literal["api", "performance"] = "api"
+    test_type: Literal["api", "performance", "agent"] = "api"
     request_body: RequestBodyDefinition | None = None
 
     def __post_init__(self) -> None:
@@ -174,7 +174,7 @@ class SuiteRegistry:
             raise SuiteRegistryError(f"Suite {suite_id!r} must be a mapping")
 
         runner_type = raw_suite.get("runner_type")
-        if runner_type not in ("pytest", "locust", "workflow"):
+        if runner_type not in ("pytest", "locust", "workflow", "agent_eval"):
             raise SuiteRegistryError(f"Suite {suite_id!r} has an invalid runner type")
 
         working_directory = SuiteRegistry._resolve_working_directory(
@@ -203,10 +203,15 @@ class SuiteRegistry:
         retry_policy = SuiteRegistry._parse_retry_policy(
             raw_suite.get("retry_policy"), suite_id
         )
-        test_type = raw_suite.get(
-            "test_type", "performance" if runner_type == "locust" else "api"
+        default_test_type = (
+            "performance"
+            if runner_type == "locust"
+            else "agent"
+            if runner_type == "agent_eval"
+            else "api"
         )
-        if test_type not in ("api", "performance"):
+        test_type = raw_suite.get("test_type", default_test_type)
+        if test_type not in ("api", "performance", "agent"):
             raise SuiteRegistryError(f"Suite {suite_id!r} has an invalid test_type")
         request_body = SuiteRegistry._parse_request_body(
             raw_suite.get("request_body"), suite_id

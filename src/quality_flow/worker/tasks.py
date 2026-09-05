@@ -16,6 +16,7 @@ from quality_flow.application.worker import RunWorker
 from quality_flow.infrastructure.artifacts import FileArtifactStore
 from quality_flow.infrastructure.celery_app import EXECUTE_RUN_TASK, create_celery_app
 from quality_flow.infrastructure.database import make_engine, make_session_factory
+from quality_flow.runners.agent_eval_runner import AgentEvalRunner
 from quality_flow.runners.locust_runner import LocustRunner
 from quality_flow.runners.pytest_runner import PytestRunner
 from quality_flow.runners.workflow_runner import WorkflowRunner
@@ -84,6 +85,10 @@ def build_default_worker() -> RunWorker:
             "pytest": PytestRunner(staging_root=staging_root),
             "locust": LocustRunner(staging_root=staging_root),
             "workflow": WorkflowRunner(
+                environment=workflow_environment,
+                staging_root=staging_root,
+            ),
+            "agent_eval": AgentEvalRunner(
                 environment=workflow_environment,
                 staging_root=staging_root,
             ),

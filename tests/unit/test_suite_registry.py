@@ -89,6 +89,38 @@ suites:
     assert suite.argv == ("workflow", "resource.yaml")
 
 
+def test_registry_accepts_registered_agent_evaluation_definitions(
+    tmp_path: Path,
+) -> None:
+    suite_root = tmp_path / "agent"
+    suite_root.mkdir()
+    (suite_root / "evaluation.yaml").write_text("version: 1\n", encoding="utf-8")
+    config = tmp_path / "suites.yaml"
+    config.write_text(
+        """
+suites:
+  agent-safety:
+    test_type: agent
+    runner_type: agent_eval
+    working_directory: agent
+    argv: [agent_eval, evaluation.yaml]
+    timeout_seconds: 30
+    allowed_parameters: {}
+    source_revision: main
+    gate_policy:
+      min_pass_rate: 1.0
+      max_failures: 0
+""",
+        encoding="utf-8",
+    )
+
+    suite = SuiteRegistry.from_yaml(config, tmp_path).get("agent-safety")
+
+    assert suite.runner_type == "agent_eval"
+    assert suite.test_type == "agent"
+    assert suite.argv == ("agent_eval", "evaluation.yaml")
+
+
 def test_repository_registry_registers_restful_booker_api(
     registry: SuiteRegistry,
 ) -> None:
