@@ -280,6 +280,30 @@ def test_workflow_report_download_has_descriptive_filename(tmp_path: Path) -> No
     assert "workflow-report.json" in response.headers["content-disposition"]
 
 
+def test_agent_eval_report_download_has_descriptive_filename(tmp_path: Path) -> None:
+    run = _run()
+    artifact_id = uuid4()
+    artifact_path = tmp_path / "opaque-agent-artifact"
+    artifact_path.write_text('{"evaluation":"safety"}', encoding="utf-8")
+    run.artifacts = [
+        SimpleNamespace(
+            artifact_id=artifact_id,
+            attempt_id=run.attempts[0].attempt_id,
+            artifact_type="agent_eval_report",
+            uri=f"runs/{run.run_id}/{run.attempts[0].attempt_id}/{uuid4().hex}",
+            artifact_metadata={"mime_type": "application/json"},
+        )
+    ]
+    client = _console_client(ConsoleRunReader([run]), FakeArtifactStore(artifact_path))
+
+    response = client.get(
+        f"/api/v1/runs/{run.run_id}/artifacts/{artifact_id}/content?download=true"
+    )
+
+    assert response.status_code == 200
+    assert "agent-eval-report.json" in response.headers["content-disposition"]
+
+
 def test_artifact_from_another_run_is_hidden(tmp_path: Path) -> None:
     owner = _run()
     other = _run()
@@ -338,6 +362,7 @@ def test_ui_exposes_test_type_and_editable_request_body_workflow() -> None:
     assert "validateRequestBody" in script.text
     assert "request_body: requestBody" in script.text
     assert "run.request_body" in script.text
+    assert "Agent 应用评测".encode() in script.content
 
 
 def test_ui_exposes_formal_operations_console_landmarks() -> None:

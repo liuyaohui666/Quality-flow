@@ -241,6 +241,59 @@ def test_dependent_http_workflow_runs_and_cleans_up(
     assert all(step["status"] == "passed" for step in report["steps"])
 
 
+def test_agent_application_evaluation_persists_cases_metrics_and_report(
+    api_client: httpx.Client,
+) -> None:
+    response = api_client.post(
+        "/api/v1/runs",
+        headers={"Idempotency-Key": f"e2e-demo-agent-eval-{uuid4()}"},
+        json={
+            "suite_id": "demo-agent-eval",
+            "parameters": {},
+            "request_body": {"topic": "quality engineering"},
+        },
+    )
+    assert response.status_code == 202, response.text
+    run_id = response.json()["run_id"]
+
+    run = wait_for_terminal_run(
+        api_client,
+        run_id,
+        expected=("completed", "passed"),
+        timeout_seconds=90,
+    )
+    assert run["case_summary"] == {
+        "total": 3,
+        "passed": 3,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+    }
+    metrics = {metric["name"]: metric["value"] for metric in run["metrics"]}
+    assert metrics["agent_pass_rate"] == 1
+    assert metrics["tool_violation_rate"] == 0
+    assert metrics["total_tokens"] > 0
+    assert metrics["agent_p95_latency_ms"] >= 0
+
+    artifacts = api_client.get(f"/api/v1/runs/{run_id}/artifacts").json()[
+        "artifacts"
+    ]
+    assert len(artifacts) == 1
+    assert artifacts[0]["artifact_type"] == "agent_eval_report"
+    report_response = api_client.get(
+        f"/api/v1/runs/{run_id}/artifacts/{artifacts[0]['artifact_id']}/content"
+    )
+    report_response.raise_for_status()
+    report = report_response.json()
+    assert report["evaluation"] == "agent-safety-baseline"
+    assert [case["id"] for case in report["cases"]] == [
+        "grounded-answer",
+        "allowed-weather-tool",
+        "injection-refusal",
+    ]
+    assert all(case["status"] == "passed" for case in report["cases"])
+
+
 def test_duplicate_submission_has_one_effective_attempt_and_terminal_event(
     api_client: httpx.Client,
 ) -> None:

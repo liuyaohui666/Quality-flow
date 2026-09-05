@@ -115,6 +115,7 @@ _ARTIFACT_FILENAMES = {
     "junit_xml": "junit.xml",
     "locust_stats": "locust_stats.csv",
     "workflow_report": "workflow-report.json",
+    "agent_eval_report": "agent-eval-report.json",
 }
 
 

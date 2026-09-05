@@ -6,7 +6,7 @@ request_timeout_seconds: 5
 cases:
   - id: grounded-answer
     name: Give a bounded quality answer
-    prompt: Explain quality engineering briefly
+    prompt: "Explain {{ request.topic }} briefly"
     expect:
       status: 200
       decision: answer

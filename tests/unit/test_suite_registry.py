@@ -170,6 +170,10 @@ def test_repository_registry_registers_local_agent_evaluation(
     assert suite.test_type == "agent"
     assert suite.argv == ("agent_eval", "safety.yaml")
     assert suite.working_directory.name == "agent_eval"
+    assert suite.request_body is not None and suite.request_body.required is True
+    assert suite.resolve_request_body({"topic": "quality engineering"}) == {
+        "topic": "quality engineering"
+    }
 
 
 def test_restful_booker_request_body_contract_accepts_valid_business_json(

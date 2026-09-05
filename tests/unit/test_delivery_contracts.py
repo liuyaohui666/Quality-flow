@@ -194,6 +194,7 @@ def test_delivery_documents_keep_claims_and_commands_truthful() -> None:
         "demo-load / baseline",
         "demo-load / degraded",
         "demo-workflow",
+        "demo-agent-eval",
     ):
         assert scenario in readme
 
@@ -222,6 +223,7 @@ def test_delivery_documents_keep_claims_and_commands_truthful() -> None:
         "pytest 功能门禁",
         "Locust 性能门禁",
         "声明式接口依赖",
+        "Agent 应用规则评测",
         "Artifact 隔离",
         "CI 退出码",
     ):

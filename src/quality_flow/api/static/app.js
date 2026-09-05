@@ -106,7 +106,11 @@ async function loadSuites() {
   prompt.value = "";
   testTypeSelect.replaceChildren(prompt);
   [...new Set(state.suites.map((suite) => suite.test_type))].forEach((testType) => {
-    const labels = { api: "接口 / 功能测试", performance: "性能测试" };
+    const labels = {
+      api: "接口 / 功能测试",
+      performance: "性能测试",
+      agent: "Agent 应用评测",
+    };
     const option = create("option", "", labels[testType] || testType);
     option.value = testType;
     testTypeSelect.append(option);
@@ -125,7 +129,12 @@ function renderSuiteCatalog() {
     const card = create("article", "suite-card");
     const header = create("div", "suite-card-header");
     const heading = create("div");
-    heading.append(create("span", "suite-type", suite.test_type === "performance" ? "性能测试" : "接口 / 功能测试"));
+    const typeLabels = {
+      api: "接口 / 功能测试",
+      performance: "性能测试",
+      agent: "Agent 应用评测",
+    };
+    heading.append(create("span", "suite-type", typeLabels[suite.test_type] || suite.test_type));
     heading.append(create("h2", "", suite.suite_id));
     header.append(heading, badge(suite.runner_type));
 

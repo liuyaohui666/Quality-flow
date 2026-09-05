@@ -91,7 +91,7 @@ suites:
     timeout_seconds: 30
     allowed_parameters: {}
     request_body:
-      required: false
+      required: true
       schema:
         type: object
         additionalProperties: false
