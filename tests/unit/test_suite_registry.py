@@ -61,6 +61,34 @@ def test_repository_registry_points_to_both_demo_runner_suites(
     }
 
 
+def test_registry_accepts_only_registered_workflow_definitions(tmp_path: Path) -> None:
+    definition = tmp_path / "resource.yaml"
+    definition.write_text("version: 1\n", encoding="utf-8")
+    config = tmp_path / "suites.yaml"
+    config.write_text(
+        """
+suites:
+  resource-workflow:
+    test_type: api
+    runner_type: workflow
+    working_directory: .
+    argv: [workflow, resource.yaml]
+    timeout_seconds: 10
+    allowed_parameters: {}
+    gate_policy:
+      min_pass_rate: 1.0
+      max_failures: 0
+    source_revision: test
+""",
+        encoding="utf-8",
+    )
+
+    suite = SuiteRegistry.from_yaml(config, tmp_path).get("resource-workflow")
+
+    assert suite.runner_type == "workflow"
+    assert suite.argv == ("workflow", "resource.yaml")
+
+
 def test_repository_registry_registers_restful_booker_api(
     registry: SuiteRegistry,
 ) -> None:

@@ -18,6 +18,7 @@ from quality_flow.infrastructure.celery_app import EXECUTE_RUN_TASK, create_cele
 from quality_flow.infrastructure.database import make_engine, make_session_factory
 from quality_flow.runners.locust_runner import LocustRunner
 from quality_flow.runners.pytest_runner import PytestRunner
+from quality_flow.runners.workflow_runner import WorkflowRunner
 
 
 WorkerFactory = Callable[[], RunWorker]
@@ -73,11 +74,19 @@ def build_default_worker() -> RunWorker:
     )
     lease_seconds = int(os.environ.get("QUALITY_FLOW_LEASE_SECONDS", "30"))
     session_factory = make_session_factory(make_engine(database_url))
+    workflow_environment = {}
+    target_url = os.environ.get("QUALITY_FLOW_TARGET_URL")
+    if target_url is not None:
+        workflow_environment["QUALITY_FLOW_TARGET_URL"] = target_url
     return RunWorker(
         session_factory,
         runners={
             "pytest": PytestRunner(staging_root=staging_root),
             "locust": LocustRunner(staging_root=staging_root),
+            "workflow": WorkflowRunner(
+                environment=workflow_environment,
+                staging_root=staging_root,
+            ),
         },
         artifact_store=FileArtifactStore(artifact_root),
         workspace_root=workspace_root,

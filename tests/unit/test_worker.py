@@ -7,6 +7,8 @@ import time
 import pytest
 
 from quality_flow.application.worker import _PostRunLeaseKeeper
+from quality_flow.runners.workflow_runner import WorkflowRunner
+from quality_flow.worker import tasks as worker_tasks
 
 
 def test_lease_keeper_stop_detaches_from_one_blocked_heartbeat() -> None:
@@ -131,3 +133,24 @@ def test_lease_keeper_propagates_completed_heartbeat_error_by_identity() -> None
 
     assert observed is failure
     assert raised.value is failure
+
+
+def test_default_worker_registers_workflow_with_only_the_target_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QUALITY_FLOW_TARGET_URL", "http://demo-target:8001")
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-be-exposed")
+    monkeypatch.setattr(worker_tasks, "make_engine", lambda _url: object())
+    monkeypatch.setattr(
+        worker_tasks, "make_session_factory", lambda _engine: object()
+    )
+    worker_tasks.build_default_worker.cache_clear()
+
+    worker = worker_tasks.build_default_worker()
+    workflow = worker._runners["workflow"]
+
+    assert isinstance(workflow, WorkflowRunner)
+    assert workflow._environment == {
+        "QUALITY_FLOW_TARGET_URL": "http://demo-target:8001"
+    }
+    worker_tasks.build_default_worker.cache_clear()

@@ -88,7 +88,7 @@ class RequestBodyDefinition:
 @dataclass(frozen=True)
 class SuiteDefinition:
     suite_id: str
-    runner_type: Literal["pytest", "locust"]
+    runner_type: Literal["pytest", "locust", "workflow"]
     working_directory: Path
     argv: tuple[str, ...]
     timeout_seconds: int
@@ -174,7 +174,7 @@ class SuiteRegistry:
             raise SuiteRegistryError(f"Suite {suite_id!r} must be a mapping")
 
         runner_type = raw_suite.get("runner_type")
-        if runner_type not in ("pytest", "locust"):
+        if runner_type not in ("pytest", "locust", "workflow"):
             raise SuiteRegistryError(f"Suite {suite_id!r} has an invalid runner type")
 
         working_directory = SuiteRegistry._resolve_working_directory(
