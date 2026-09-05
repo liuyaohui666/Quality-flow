@@ -6,6 +6,9 @@ request_timeout_seconds: 5
 cases:
   - id: context-memory
     name: Keep deployment context across turns
+    sample_count: 3
+    min_sample_pass_rate: 1
+    min_behavior_consistency_rate: 1
     turns:
       - prompt: "Remember that my deployment region is Hefei while discussing {{ request.topic }}"
         expect:

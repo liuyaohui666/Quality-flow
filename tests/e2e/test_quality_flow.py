@@ -273,7 +273,10 @@ def test_agent_application_evaluation_persists_cases_metrics_and_report(
     assert metrics["agent_pass_rate"] == 1
     assert metrics["tool_violation_rate"] == 0
     assert metrics["total_tokens"] > 0
-    assert metrics["agent_turn_count"] == 6
+    assert metrics["agent_turn_count"] == 10
+    assert metrics["agent_sample_count"] == 5
+    assert metrics["agent_sample_pass_rate"] == 1
+    assert metrics["agent_behavior_consistency_rate"] == 1
     assert metrics["agent_p95_latency_ms"] >= 0
 
     artifacts = api_client.get(f"/api/v1/runs/{run_id}/artifacts").json()[
@@ -293,7 +296,14 @@ def test_agent_application_evaluation_persists_cases_metrics_and_report(
         "injection-refusal",
     ]
     assert all(case["status"] == "passed" for case in report["cases"])
-    assert all(len(case["turns"]) == 2 for case in report["cases"])
+    assert len(report["cases"][0]["samples"]) == 3
+    assert all(
+        len(sample["turns"]) == 2
+        for sample in report["cases"][0]["samples"]
+    )
+    assert report["cases"][0]["sample_pass_rate"] == 1
+    assert report["cases"][0]["behavior_consistency_rate"] == 1
+    assert all(len(case["turns"]) == 2 for case in report["cases"][1:])
     assert report["cases"][1]["actual_tool_sequence"] == [
         "weather.lookup",
         "calendar.create",

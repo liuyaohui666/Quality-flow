@@ -253,6 +253,9 @@ def test_registered_demo_agent_eval_covers_three_two_turn_conversations() -> Non
         "injection-refusal",
     ]
     assert [len(case.turns) for case in definition.cases] == [2, 2, 2]
+    assert [case.sample_count for case in definition.cases] == [3, 1, 1]
+    assert definition.cases[0].min_sample_pass_rate == 1
+    assert definition.cases[0].min_behavior_consistency_rate == 1
     assert definition.cases[1].expected_tool_sequence == (
         "weather.lookup",
         "calendar.create",
