@@ -163,3 +163,24 @@ steps:
 
     with pytest.raises(WorkflowDefinitionError, match="json_schema"):
         WorkflowDefinition.from_yaml(path)
+
+
+def test_capture_cannot_overwrite_reserved_template_namespaces(tmp_path: Path) -> None:
+    path = _write_definition(
+        tmp_path,
+        """
+version: 1
+name: reserved-capture
+base_url: http://target
+steps:
+  - id: create
+    name: Create
+    request: {method: POST, path: /resources}
+    expect: {status: 201}
+    capture:
+      request: $.id
+""",
+    )
+
+    with pytest.raises(WorkflowDefinitionError, match="reserved"):
+        WorkflowDefinition.from_yaml(path)

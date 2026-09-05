@@ -217,3 +217,56 @@ def test_runner_enforces_the_run_deadline_before_starting_a_step(
     assert result.attempt_status is AttemptStatus.TIMED_OUT
     assert result.failure_kind == "timeout"
     assert requests == []
+
+
+def test_runner_classifies_request_timeout_at_run_deadline_as_timed_out(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, _happy_definition().replace("request_timeout_seconds: 2", "request_timeout_seconds: 5"))
+
+    def times_out(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("run budget exhausted", request=request)
+
+    result = WorkflowRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(times_out),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path, timeout=1), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.TIMED_OUT
+    assert result.failure_kind == "timeout"
+
+
+def test_runner_treats_per_request_timeout_as_test_error(tmp_path: Path) -> None:
+    _write(tmp_path, _happy_definition())
+
+    def times_out(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("target response timeout", request=request)
+
+    result = WorkflowRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(times_out),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path, timeout=5), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.TEST_FAILED
+    assert result.failure_kind == "workflow_request_error"
+
+
+def test_runner_rejects_base_url_with_path_as_configuration_error(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        _happy_definition().replace(
+            'base_url: "{{ env.QUALITY_FLOW_TARGET_URL }}"',
+            "base_url: http://target.test/api",
+        ),
+    )
+
+    result = WorkflowRunner(
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging"
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.INFRA_FAILED
+    assert result.failure_kind == "workflow_configuration"

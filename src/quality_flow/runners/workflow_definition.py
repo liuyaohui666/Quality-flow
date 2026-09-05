@@ -233,6 +233,10 @@ def _parse_step(raw: Any, location: str) -> WorkflowStep:
     captures: dict[str, str] = {}
     for capture_name, capture_path in capture_raw.items():
         _identifier(capture_name, f"{location}.capture name")
+        if capture_name in _NAMESPACES:
+            raise WorkflowDefinitionError(
+                f"{location}.capture name {capture_name!r} is reserved"
+            )
         if not isinstance(capture_path, str) or not capture_path.startswith("$."):
             raise WorkflowDefinitionError(f"{location}.capture paths must start with $.")
         captures[capture_name] = capture_path

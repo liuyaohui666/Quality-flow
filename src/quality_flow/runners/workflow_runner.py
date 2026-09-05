@@ -229,6 +229,7 @@ class WorkflowRunner:
         heartbeat: Callable[[], None],
     ) -> "_StepOutcome":
         step_started = self._monotonic()
+        deadline_limited_request = False
         if step_started >= deadline:
             message = "run deadline exceeded before request"
             return _StepOutcome(
@@ -250,6 +251,7 @@ class WorkflowRunner:
                 raise WorkflowDefinitionError("request path must be relative and start with /")
             heartbeat()
             remaining = max(deadline - self._monotonic(), 0.001)
+            deadline_limited_request = remaining <= definition.request_timeout_seconds
             response = client.request(
                 step.request.method,
                 path,
@@ -314,6 +316,30 @@ class WorkflowRunner:
                     message=str(error),
                 ),
                 report=_error_report(step, phase, str(error), duration_ms),
+            )
+        except httpx.TimeoutException as error:
+            duration_ms = (self._monotonic() - step_started) * 1000
+            if deadline_limited_request:
+                message = "run deadline exceeded during HTTP request"
+                return _StepOutcome(
+                    case=CaseResultData(
+                        node_id=f"workflow::{step.step_id}",
+                        status="error",
+                        duration_ms=duration_ms,
+                        message=message,
+                    ),
+                    report=_error_report(step, phase, message, duration_ms),
+                    timed_out=True,
+                )
+            message = f"HTTP request timed out: {error}"
+            return _StepOutcome(
+                case=CaseResultData(
+                    node_id=f"workflow::{step.step_id}",
+                    status="error",
+                    duration_ms=duration_ms,
+                    message=message,
+                ),
+                report=_error_report(step, phase, message, duration_ms),
             )
         except httpx.HTTPError as error:
             duration_ms = (self._monotonic() - step_started) * 1000
@@ -406,8 +432,10 @@ def _validated_base_url(value: Any) -> str:
     url = httpx.URL(value)
     if url.scheme not in {"http", "https"} or not url.host:
         raise WorkflowDefinitionError("workflow base_url must be an HTTP(S) origin")
-    if url.username or url.password or url.query or url.fragment:
-        raise WorkflowDefinitionError("workflow base_url must not contain credentials, query, or fragment")
+    if url.username or url.password or url.query or url.fragment or url.path not in {"", "/"}:
+        raise WorkflowDefinitionError(
+            "workflow base_url must be an origin without credentials, path, query, or fragment"
+        )
     return str(url)
 
 
