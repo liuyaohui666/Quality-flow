@@ -51,3 +51,34 @@ def test_missing_and_unknown_modes_are_rejected_as_4xx() -> None:
 
     assert client.get("/work").status_code == 422
     assert client.get("/work", params={"mode": "random"}).status_code == 422
+
+
+def test_workflow_resource_supports_a_deterministic_crud_lifecycle() -> None:
+    client = TestClient(create_app())
+
+    created = client.post("/workflow/resources", json={"name": "Ada"})
+
+    assert created.status_code == 201
+    assert created.json() == {"id": "resource-1", "name": "Ada"}
+    resource_id = created.json()["id"]
+    assert client.get(f"/workflow/resources/{resource_id}").json() == created.json()
+
+    updated = client.patch(
+        f"/workflow/resources/{resource_id}", json={"name": "Grace"}
+    )
+    assert updated.status_code == 200
+    assert updated.json() == {"id": "resource-1", "name": "Grace"}
+
+    removed = client.delete(f"/workflow/resources/{resource_id}")
+    assert removed.status_code == 204
+    assert client.get(f"/workflow/resources/{resource_id}").status_code == 404
+
+
+def test_workflow_resources_are_isolated_per_demo_app() -> None:
+    first = TestClient(create_app())
+    second = TestClient(create_app())
+
+    first.post("/workflow/resources", json={"name": "Only in first"})
+
+    assert first.get("/workflow/resources/resource-1").status_code == 200
+    assert second.get("/workflow/resources/resource-1").status_code == 404

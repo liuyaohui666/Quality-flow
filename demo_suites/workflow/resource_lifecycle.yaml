@@ -1,0 +1,69 @@
+version: 1
+name: resource-lifecycle
+base_url: "{{ env.QUALITY_FLOW_TARGET_URL }}"
+request_timeout_seconds: 5
+steps:
+  - id: create
+    name: Create a resource
+    request:
+      method: POST
+      path: /workflow/resources
+      json:
+        name: "{{ request.name }}"
+    expect:
+      status: 201
+      json_contains:
+        name: "{{ request.name }}"
+      json_schema:
+        type: object
+        additionalProperties: false
+        required: [id, name]
+        properties:
+          id: {type: string}
+          name: {type: string}
+    capture:
+      resource_id: $.id
+
+  - id: read-created
+    name: Read the created resource
+    request:
+      method: GET
+      path: "/workflow/resources/{{ resource_id }}"
+    expect:
+      status: 200
+      json_contains:
+        id: "{{ resource_id }}"
+        name: "{{ request.name }}"
+
+  - id: update
+    name: Update the captured resource
+    request:
+      method: PATCH
+      path: "/workflow/resources/{{ resource_id }}"
+      json:
+        name: "{{ request.updated_name }}"
+    expect:
+      status: 200
+      json_contains:
+        id: "{{ resource_id }}"
+        name: "{{ request.updated_name }}"
+
+  - id: read-updated
+    name: Verify the update
+    request:
+      method: GET
+      path: "/workflow/resources/{{ resource_id }}"
+    expect:
+      status: 200
+      json_contains:
+        name: "{{ request.updated_name }}"
+
+cleanup:
+  - id: delete
+    name: Delete the captured resource
+    when_variables: [resource_id]
+    request:
+      method: DELETE
+      path: "/workflow/resources/{{ resource_id }}"
+    expect:
+      status: 204

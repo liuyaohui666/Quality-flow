@@ -114,6 +114,21 @@ def test_repository_registry_registers_restful_booker_api(
     assert suite.gate_policy.max_failures == 0
 
 
+def test_repository_registry_registers_local_dependent_workflow(
+    registry: SuiteRegistry,
+) -> None:
+    suite = registry.get("demo-workflow")
+
+    assert suite.runner_type == "workflow"
+    assert suite.test_type == "api"
+    assert suite.argv == ("workflow", "resource_lifecycle.yaml")
+    assert suite.working_directory.name == "workflow"
+    assert suite.request_body is not None and suite.request_body.required is True
+    assert suite.resolve_request_body(
+        {"name": "Ada", "updated_name": "Grace"}
+    ) == {"name": "Ada", "updated_name": "Grace"}
+
+
 def test_restful_booker_request_body_contract_accepts_valid_business_json(
     registry: SuiteRegistry,
 ) -> None:
