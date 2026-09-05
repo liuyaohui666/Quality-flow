@@ -36,6 +36,29 @@ cases:
 """
 
 
+def test_definition_accepts_immutable_query_templates(tmp_path: Path) -> None:
+    definition = AgentEvalDefinition.from_yaml(_write(
+        tmp_path, _definition() + '\nquery_parameters:\n  scenario: "{{ request.scenario }}"\n'
+    ))
+    assert definition.query_parameters == {"scenario": "{{ request.scenario }}"}
+    with pytest.raises(TypeError):
+        definition.query_parameters["scenario"] = "changed"
+
+
+@pytest.mark.parametrize("query", [
+    "[]", "{scenario: 123}", "{scenario: null}", "{bad.name: text}",
+    "{scenario: [normal]}", "{scenario: '" + "x" * 2001 + "'}",
+    "{" + ", ".join(f"field{i}: text" for i in range(11)) + "}",
+])
+def test_definition_rejects_unbounded_or_non_string_query_parameters(
+    tmp_path: Path, query: str
+) -> None:
+    with pytest.raises(AgentEvalDefinitionError, match="query_parameters"):
+        AgentEvalDefinition.from_yaml(_write(
+            tmp_path, _definition() + f"\nquery_parameters: {query}\n"
+        ))
+
+
 def test_definition_parses_strict_agent_evaluation_cases(tmp_path: Path) -> None:
     definition = AgentEvalDefinition.from_yaml(_write(tmp_path, _definition()))
 

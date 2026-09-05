@@ -23,6 +23,7 @@ _ROOT_KEYS = {
     "path",
     "request_timeout_seconds",
     "cases",
+    "query_parameters",
 }
 _CASE_KEYS = {
     "id",
@@ -116,6 +117,10 @@ class AgentEvalDefinition:
     path: str
     request_timeout_seconds: float
     cases: tuple[AgentEvalCase, ...]
+    query_parameters: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "query_parameters", MappingProxyType(dict(self.query_parameters)))
 
     @classmethod
     def from_yaml(cls, path: Path) -> "AgentEvalDefinition":
@@ -127,6 +132,16 @@ class AgentEvalDefinition:
             ) from error
         root = _mapping(raw, "agent evaluation")
         _reject_unknown(root, _ROOT_KEYS, "agent evaluation")
+        query_parameters = _mapping(root.get("query_parameters", {}), "query_parameters")
+        if len(query_parameters) > 10 or any(
+            _IDENTIFIER.fullmatch(key) is None
+            or not isinstance(value, str)
+            or len(value) > 2000
+            for key, value in query_parameters.items()
+        ):
+            raise AgentEvalDefinitionError(
+                "query_parameters requires at most 10 identifier keys and text values <= 2000 characters"
+            )
         if root.get("version") != 1:
             raise AgentEvalDefinitionError("Agent evaluation version must be 1")
         name = _text(root.get("name"), "agent evaluation name")
@@ -168,6 +183,7 @@ class AgentEvalDefinition:
             path=endpoint_path,
             request_timeout_seconds=float(timeout),
             cases=cases,
+            query_parameters=query_parameters,
         )
 
 

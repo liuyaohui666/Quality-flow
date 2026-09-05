@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
 from quality_flow.domain.enums import AttemptStatus
 from quality_flow.runners.agent_eval_runner import AgentEvalRunner
@@ -593,6 +594,10 @@ def test_runner_rejects_tool_arguments_without_exposing_rejected_values(
     assert "additionalProperties" in message
     assert "12345" not in message
     assert "do-not-log" not in message
+    serialized_report = result.artifacts[0].source_path.read_text(encoding="utf-8")
+    assert "12345" not in serialized_report
+    assert "do-not-log" not in serialized_report
+    assert "REDACTED invalid tool arguments" in serialized_report
     metrics = {metric.name: metric.value for metric in result.metrics}
     assert metrics["tool_violation_rate"] == 1
 
@@ -641,8 +646,141 @@ def test_tool_contract_failures_contribute_to_sample_pass_rate(
         staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
     ).run(_spec(tmp_path), tmp_path, lambda: None)
 
-    assert result.attempt_status is AttemptStatus.PASSED
+    assert result.attempt_status is AttemptStatus.TEST_FAILED
     metrics = {metric.name: metric.value for metric in result.metrics}
     assert metrics["agent_sample_pass_rate"] == 2 / 3
     assert metrics["agent_behavior_consistency_rate"] == 1
     assert metrics["tool_violation_rate"] == 1
+
+
+def test_missing_required_tool_cannot_be_averaged_away(tmp_path: Path) -> None:
+    _write(tmp_path, _tool_contract_definition(sample_count=3))
+    include_tool = iter((False, True, True))
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        tools = (
+            [{"name": "weather.lookup", "arguments": {"city": "Hefei"}}]
+            if next(include_tool)
+            else []
+        )
+        return _response(decision="tool_call", answer="The weather is ready", tools=tools)
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(handler),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.TEST_FAILED
+    report = json.loads(result.artifacts[0].source_path.read_text(encoding="utf-8"))
+    assert report["cases"][0]["safety_violation_samples"] == [1]
+    assert report["cases"][0]["samples"][0]["safety_violations"] == [
+        "tool_contract"
+    ]
+    metrics = {metric.name: metric.value for metric in result.metrics}
+    assert metrics["tool_violation_rate"] == 1
+    report = json.loads(result.artifacts[0].source_path.read_text(encoding="utf-8"))
+    assert report["cases"][0]["safety_violation_samples"] == [1]
+    assert "safety violation" in result.case_results[0].message
+
+
+@pytest.mark.parametrize("violation", ["scope_expansion", "refusal_bypass", "tool_contract"])
+def test_safety_violation_cannot_be_averaged_away(tmp_path: Path, violation: str) -> None:
+    definition = _sampling_definition(
+        min_sample_pass_rate=0.66, min_behavior_consistency_rate=0.66
+    )
+    if violation == "refusal_bypass":
+        definition = definition.replace("decision: answer", "decision: refuse")
+    _write(tmp_path, definition)
+    samples = iter((True, False, False))
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        faulty = next(samples)
+        return _response(
+            decision=("answer" if faulty else "refuse")
+            if violation == "refusal_bypass" else "answer",
+            answer="Quality evidence",
+            scope_expanded=faulty and violation == "scope_expansion",
+            tools=[{"name": "admin.delete", "arguments": {}}]
+            if faulty and violation == "tool_contract" else [],
+        )
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(handler),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.TEST_FAILED
+    assert result.gate_result is not None and not result.gate_result.passed
+    report = json.loads(result.artifacts[0].source_path.read_text(encoding="utf-8"))
+    case = report["cases"][0]
+    assert case["safety_violation_samples"] == [1]
+    assert case["samples"][0]["safety_violations"] == [violation]
+    assert case["sample_pass_rate"] == 2 / 3
+
+
+@pytest.mark.parametrize("response_kind", ["malformed", "network"])
+def test_invalid_samples_cannot_pass_with_zero_thresholds(
+    tmp_path: Path, response_kind: str
+) -> None:
+    _write(tmp_path, _sampling_definition(
+        min_sample_pass_rate=0, min_behavior_consistency_rate=0
+    ))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if response_kind == "network":
+            raise httpx.ConnectError("offline", request=request)
+        return httpx.Response(200, json={"answer": "not a valid contract"})
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(handler),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.TEST_FAILED
+    metrics = {metric.name: metric.value for metric in result.metrics}
+    assert metrics["agent_behavior_consistency_rate"] == 0
+    report = json.loads(result.artifacts[0].source_path.read_text(encoding="utf-8"))
+    assert report["cases"][0]["invalid_samples"] == [1, 2, 3]
+
+
+def test_query_templates_are_encoded_without_changing_target(tmp_path: Path) -> None:
+    _write(tmp_path, _sampling_definition(sample_count=1) +
+           '\nquery_parameters:\n  scenario: "{{ request.topic }}"\n')
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _response(decision="answer", answer="Quality evidence")
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(handler),
+        staging_root=tmp_path.parent / f"{tmp_path.name}-staging",
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.PASSED
+    assert seen[0].url.host == "target.test"
+    assert seen[0].url.path == "/agent/respond"
+    assert seen[0].url.params["scenario"] == "quality engineering"
+
+
+@pytest.mark.parametrize("template", ["{{ request.missing }}", "{{ request }}"])
+def test_invalid_query_template_never_sends_request(tmp_path: Path, template: str) -> None:
+    _write(tmp_path, _sampling_definition(sample_count=1) +
+           f'\nquery_parameters:\n  scenario: "{template}"\n')
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return _response(decision="answer", answer="Quality evidence")
+
+    result = AgentEvalRunner(
+        environment={"QUALITY_FLOW_TARGET_URL": "http://target.test"},
+        transport=httpx.MockTransport(handler),
+    ).run(_spec(tmp_path), tmp_path, lambda: None)
+
+    assert result.attempt_status is AttemptStatus.INFRA_FAILED
+    assert not seen
