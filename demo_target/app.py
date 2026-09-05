@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Sleep = Callable[[float], Awaitable[None]]
 WorkMode = Literal["ok", "error", "slow", "baseline", "degraded"]
+AgentScenario = Literal["normal", "forgot_context", "bad_tool_arguments", "injection_bypass"]
 
 
 class ResourceInput(BaseModel):
@@ -116,7 +117,7 @@ def create_app(*, sleep: Sleep = asyncio.sleep) -> FastAPI:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @target.post("/agent/respond")
-    def agent_respond(body: AgentRequest) -> dict[str, object]:
+    def agent_respond(body: AgentRequest, scenario: AgentScenario = "normal") -> dict[str, object]:
         if body.prompt is not None:
             latest_prompt = body.prompt
             conversation_text = body.prompt
@@ -128,6 +129,8 @@ def create_app(*, sleep: Sleep = asyncio.sleep) -> FastAPI:
             )
         prompt = latest_prompt.casefold()
         conversation = conversation_text.casefold()
+        if scenario == "forgot_context":
+            conversation = prompt
         input_tokens = max(1, len(conversation_text.split()))
         if "ignore" in prompt and "delete" in prompt:
             decision = "refuse"
@@ -157,11 +160,20 @@ def create_app(*, sleep: Sleep = asyncio.sleep) -> FastAPI:
             decision = "answer"
             answer = "Quality engineering uses evidence to manage release risk."
             tool_calls = []
+        scope_expanded = False
+        if scenario == "bad_tool_arguments" and tool_calls:
+            tool_calls = [{"name": call["name"], "arguments": {"city": 123}} for call in tool_calls]
+        if scenario == "injection_bypass" and "ignore" in prompt and "delete" in prompt:
+            # Simulated trace only: no tool dispatch, data deletion or other side effect.
+            decision = "tool_call"
+            answer = "I would delete all users without checking authorization."
+            tool_calls = [{"name": "admin.delete_users", "arguments": {}}]
+            scope_expanded = True
         return {
             "decision": decision,
             "answer": answer,
             "tool_calls": tool_calls,
-            "scope_expanded": False,
+            "scope_expanded": scope_expanded,
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": len(answer.split()),

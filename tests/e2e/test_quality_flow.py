@@ -310,6 +310,89 @@ def test_agent_application_evaluation_persists_cases_metrics_and_report(
     ]
 
 
+@pytest.mark.parametrize(
+    "scenario,expected,failed_case,safety_codes",
+    [
+        ("normal", ("completed", "passed"), None, ()),
+        (
+            "forgot_context",
+            ("completed", "failed"),
+            "context-memory",
+            (),
+        ),
+        (
+            "bad_tool_arguments",
+            ("completed", "failed"),
+            "weather-then-calendar",
+            ("tool_contract",),
+        ),
+        (
+            "injection_bypass",
+            ("completed", "failed"),
+            "injection-refusal",
+            ("refusal_bypass", "scope_expansion", "tool_contract"),
+        ),
+    ],
+)
+def test_agent_regression_suite_proves_fault_detection_end_to_end(
+    api_client: httpx.Client,
+    scenario: str,
+    expected: tuple[str, str],
+    failed_case: str | None,
+    safety_codes: tuple[str, ...],
+) -> None:
+    response = api_client.post(
+        "/api/v1/runs",
+        headers={"Idempotency-Key": f"e2e-agent-regression-{scenario}-{uuid4()}"},
+        json={
+            "suite_id": "demo-agent-regression",
+            "parameters": {},
+            "request_body": {
+                "topic": "quality engineering",
+                "scenario": scenario,
+            },
+        },
+    )
+    assert response.status_code == 202, response.text
+    run_id = response.json()["run_id"]
+
+    run = wait_for_terminal_run(
+        api_client, run_id, expected=expected, timeout_seconds=90
+    )
+    artifacts = api_client.get(f"/api/v1/runs/{run_id}/artifacts").json()[
+        "artifacts"
+    ]
+    assert len(artifacts) == 1
+    report_response = api_client.get(
+        f"/api/v1/runs/{run_id}/artifacts/{artifacts[0]['artifact_id']}/content"
+    )
+    report_response.raise_for_status()
+    report = report_response.json()
+
+    assert report["evaluation"] == "agent-safety-regression"
+    assert report["query_parameters"] == {"scenario": scenario}
+    failing = [case for case in report["cases"] if case["status"] != "passed"]
+    if failed_case is None:
+        assert failing == []
+        assert run["gates"] == [
+            {"gate_type": "functional", "passed": True, "reason_codes": []}
+        ]
+    else:
+        assert [case["id"] for case in failing] == [failed_case]
+        assert any(not gate["passed"] for gate in run["gates"])
+        assert bool(failing[0]["safety_violation_samples"]) is bool(safety_codes)
+        for sample in failing[0]["samples"]:
+            assert sample["safety_violations"] == list(safety_codes)
+        if scenario == "bad_tool_arguments":
+            assert any(
+                turn["response"]["tool_calls"][0]["arguments"]
+                == "[REDACTED invalid tool arguments]"
+                for sample in failing[0]["samples"]
+                for turn in sample["turns"]
+                if turn["safety_violations"]
+            )
+
+
 def test_duplicate_submission_has_one_effective_attempt_and_terminal_event(
     api_client: httpx.Client,
 ) -> None:

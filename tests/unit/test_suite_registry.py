@@ -26,6 +26,23 @@ def test_registry_rejects_unknown_suite(registry: SuiteRegistry) -> None:
         registry.get("arbitrary-command")
 
 
+@pytest.mark.parametrize("scenario", [
+    "normal", "forgot_context", "bad_tool_arguments", "injection_bypass",
+])
+def test_agent_regression_suite_accepts_only_known_scenarios(
+    registry: SuiteRegistry, scenario: str,
+) -> None:
+    suite = registry.get("demo-agent-regression")
+    payload = {"topic": "quality engineering", "scenario": scenario}
+    assert suite.resolve_request_body(payload) == payload
+    assert suite.runner_type == "agent_eval"
+    assert suite.argv == ("agent_eval", "regression.yaml")
+    with pytest.raises(InvalidSuiteRequestBody):
+        suite.resolve_request_body({"topic": "quality engineering", "scenario": "arbitrary"})
+    with pytest.raises(InvalidSuiteRequestBody):
+        suite.resolve_request_body({"topic": "quality engineering"})
+
+
 def test_registry_rejects_parameter_outside_allowlist(registry: SuiteRegistry) -> None:
     suite = registry.get("demo-api")
 

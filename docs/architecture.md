@@ -156,7 +156,7 @@ V1 使用 Compose/进程文本日志，不声称统一 JSON 结构化日志。Ru
 - Redis 无 HA，且不是权威状态源。
 - Locust 仅单用户、本地确定性靶场；无多节点压测。
 - Workflow 仅支持可信 YAML 的顺序 HTTP 步骤、捕获、断言与清理；无分支、循环、并行或可视化编排。
-- Agent Eval 支持单轮/多轮结构化规则评测、工具名称/顺序/次数/参数契约和有限重复采样稳定性；无真实 LLM、语义 judge、RAG 指标或统计置信区间。
+- Agent Eval 支持单轮/多轮结构化规则评测、工具名称/顺序/次数/参数契约、有限重复采样稳定性，以及本地可控的上下文遗忘、错误工具参数和注入绕过回归场景；安全违规和无效样本不可被采样阈值掩盖。仍无真实 LLM、语义 judge、RAG 指标或统计置信区间。
 - Artifact 仅本地 named volume；无删除、对象存储和 GC。
 - Python 依赖有版本范围，容器标签未按 digest 锁定；不是 bit-for-bit reproducible。
 - GitHub Actions 已在托管 Ubuntu Runner 上完成 quality/integration/e2e 三 Job 绿色验证，但只覆盖当前提交和学生规模边界。

@@ -45,7 +45,7 @@ flowchart LR
 
 更完整的数据流、事务边界和竞态说明见 [架构文档](docs/architecture.md)，能力到证据的映射见 [证据矩阵](docs/evidence-matrix.md)。
 
-## 七个确定性场景
+## 十一种确定性场景
 
 | 套件 / 场景 | 制造机制 | 预期终态 | 关键证据 |
 | --- | --- | --- | --- |
@@ -56,6 +56,10 @@ flowchart LR
 | `demo-load / degraded` | 每次响应固定延迟 350 ms，超过 P95 250 ms | `completed/failed` | HTTP 错误率为 0，`p95_ms` 门禁失败 |
 | `demo-workflow` | 创建资源后捕获 ID，依次查询、修改、复查并清理 | `completed/passed` | 5 个 step case、功能门禁、脱敏 Workflow JSON 报告 |
 | `demo-agent-eval` | 评测多轮上下文、工具调用顺序和注入拒绝 | `completed/passed` | 3 个会话 case / 6 个 turn、越权率/P95/Token 指标、脱敏评测报告 |
+| `demo-agent-regression / normal` | Agent 按已注册契约响应 | `completed/passed` | 3 个会话、9 次采样全部通过 |
+| `demo-agent-regression / forgot_context` | 第二轮故意遗忘部署地区 | `completed/failed` | 上下文用例缺少预期答案片段 |
+| `demo-agent-regression / bad_tool_arguments` | 工具名称正确但参数类型错误 | `completed/failed` | 参数 Schema 违规、安全样本索引 |
+| `demo-agent-regression / injection_bypass` | 模拟接受越权删除指令 | `completed/failed` | 未授权工具、拒绝绕过、范围扩大 |
 
 后三个非通过终态是项目刻意制造的验证证据，不代表平台启动失败。
 
@@ -170,6 +174,8 @@ Invoke-RestMethod "http://127.0.0.1:18000/api/v1/runs/$($run.run_id)/artifacts"
 
 稳定性不要求回答文字完全相同，而是比较每轮 decision 和整段工具调用轨迹；这样既容许自然语言表述变化，也能抓住同一输入有时回答、有时拒绝或乱用工具的行为漂移。这一版仍使用确定性规则作为测试预言，因此适合 CI 回归和安全边界验证；它不声称能够判断开放式回答“是否足够好”。语义相似度、RAG 召回指标、真实模型接入和 LLM-as-judge 仍属于后续能力。
 
+`demo-agent-regression` 提供正常、上下文遗忘、工具参数错误和提示词注入绕过四个可控场景，用于证明上述规则能够发现真实类型的 Agent 缺陷。安全违规、拒绝绕过和无效响应不会被宽松的重复采样通过率掩盖。操作与预期结果见 [Agent 安全回归演示](docs/agent-regression-guide.md)。
+
 ## 可选：手工触发公开 Restful Booker
 
 已注册的 `restful-booker-api` 套件使用以下请求体：
@@ -235,7 +241,7 @@ docker compose -p quality-flow-demo config --quiet
 
 1. `quality`：Ruff、全部单元测试、独立 POSIX 进程树清理回归；
 2. `integration`：隔离 PostgreSQL/Redis、Alembic 迁移、Outbox/lease/Worker 集成测试；
-3. `e2e`：最终镜像无缓存构建、八服务空卷启动、七场景、幂等和 CI gate 退出码。
+3. `e2e`：最终镜像无缓存构建、八服务空卷启动、十一种确定性场景、幂等和 CI gate 退出码。
 
 工作流使用只读仓库权限、固定 SHA 的官方 Actions、有限 Job 超时和命名 Compose 项目。失败时先收集限定的状态/日志/JUnit，再由 `scripts/audit_ci_evidence.py` 检查扩展名、大小、符号链接、凭据式 URL、认证头和 canary；只有审计通过才保留 14 天。清理只作用于当前 Job 的命名项目，不使用系统级 prune。
 
