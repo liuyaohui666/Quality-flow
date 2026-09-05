@@ -53,6 +53,26 @@ class PerformanceSummary:
 
 
 @dataclass(frozen=True)
+class MetricData:
+    """A runner-defined numeric metric persisted with the current Attempt."""
+
+    name: str
+    value: float
+    unit: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("metric name must not be blank")
+        if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
+            raise ValueError("metric value must be numeric")
+        if not math.isfinite(float(self.value)):
+            raise ValueError("metric value must be finite")
+        if not isinstance(self.unit, str) or not self.unit.strip():
+            raise ValueError("metric unit must not be blank")
+        object.__setattr__(self, "value", float(self.value))
+
+
+@dataclass(frozen=True)
 class GateResult:
     passed: bool
     reason_codes: tuple[str, ...]
@@ -154,6 +174,7 @@ class RunnerOutcome:
     case_results: tuple[CaseResultData, ...] = ()
     case_summary: CaseSummary | None = None
     performance_summary: PerformanceSummary | None = None
+    metrics: tuple[MetricData, ...] = ()
     gate_result: GateResult | None = None
     artifacts: tuple[RunnerArtifact, ...] = ()
     failure_kind: str | None = None
@@ -161,4 +182,5 @@ class RunnerOutcome:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "case_results", tuple(self.case_results))
+        object.__setattr__(self, "metrics", tuple(self.metrics))
         object.__setattr__(self, "artifacts", tuple(self.artifacts))

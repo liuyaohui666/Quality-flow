@@ -344,4 +344,5 @@ def _outcome_metrics(outcome: RunnerOutcome) -> tuple[tuple[str, float, str], ..
                 ("failure_count", float(summary.failure_count), "count"),
             )
         )
+    metrics.extend((metric.name, metric.value, metric.unit) for metric in outcome.metrics)
     return tuple(metrics)
