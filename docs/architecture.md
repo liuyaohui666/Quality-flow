@@ -16,7 +16,7 @@ sequenceDiagram
     participant D as Dispatcher
     participant R as Redis/Celery
     participant W as Worker
-    participant X as pytest/Locust
+    participant X as pytest/Locust/Workflow
     participant S as ArtifactStore
     participant L as Reconciler
 
@@ -91,7 +91,9 @@ run(execution_spec, workspace) -> RunnerOutcome
 
 Registry 只允许固定 `suite_id`、runner 类型、argv 模板、参数取值、超时和 gate policy。API 不接受原始命令。Worker 从 Run 快照读取源目录，把可信源复制到 `/runtime/workspaces/<run>/<attempt>`，再执行参数数组和 `shell=False`。
 
-子进程获得最小环境；stdout/stderr 并发排空且有大小上限；heartbeat 受控；整体使用硬超时。POSIX 使用进程组、Windows 使用 Job Object 处理后代进程。结果文件先复制到 Runner 管理的 staging，再解析，避免套件在解析前替换链接或文件。
+pytest/Locust 子进程获得最小环境；stdout/stderr 并发排空且有大小上限；heartbeat 受控；整体使用硬超时。POSIX 使用进程组、Windows 使用 Job Object 处理后代进程。结果文件先复制到 Runner 管理的 staging，再解析，避免套件在解析前替换链接或文件。
+
+WorkflowRunner 读取仓库中预注册的可信 YAML，在同一 Attempt 内顺序执行 HTTP 步骤。它可以从 `request`、`parameters`、受控 `env` 和前序响应捕获值中渲染请求，并支持状态码、JSON 子集和 JSON Schema 断言；清理步骤在主流程失败后仍会按已捕获变量尽力执行。客户端仍不能提交 URL、命令或工作流正文。
 
 `restful-booker-api` 是一个可选的外部套件，请求参数固定为 `parameters: {}`。它运行针对公开 Restful Booker 部署的测试，被测后端不在本仓库。由于这是公开外部服务，网络可用性不是平台自身的可重复条件，因此不进入必跑 CI。QualityFlow 保存 JUnit/stdout/stderr；QualityFlow 不归档 Allure，独立原项目保留 Allure。
 
@@ -101,7 +103,7 @@ Registry 只允许固定 `suite_id`、runner 类型、argv 模板、参数取值
 
 ## 8. 结果、门禁与终态
 
-PytestRunner 生成并解析 JUnit XML；LocustRunner 解析聚合 CSV。RunnerOutcome 包含 Attempt 状态、退出码、时间、case/metric、gate、Artifact 源和失败分类。
+PytestRunner 生成并解析 JUnit XML；LocustRunner 解析聚合 CSV；WorkflowRunner 将每个 HTTP 步骤转换为 CaseResult，并生成脱敏 JSON 报告。RunnerOutcome 包含 Attempt 状态、退出码、时间、case/metric、gate、Artifact 源和失败分类。
 
 主要终态：
 
@@ -126,7 +128,7 @@ Runner 只返回 staging 中已验证的普通文件。FileArtifactStore：
 4. 写入服务拥有目录中的临时文件并原子替换；
 5. 返回内部 URI 和安全元数据供数据库登记。
 
-公开 API 只返回安全元数据：Artifact/Attempt ID、类型、checksum、size、MIME、created_at。它不返回内部 URI/路径，也**不提供 Artifact 文件下载接口**。V1 的单 Run 总量限制与垃圾回收尚未实现。
+公开 API 只返回安全元数据：Artifact/Attempt ID、类型、checksum、size、MIME、created_at。文件读取接口会先按 Run 和 Artifact ID 校验数据库归属，再解析平台生成的不透明 URI；它不接受客户端路径，也不返回内部 URI/路径。V1 的单 Run 总量限制与垃圾回收尚未实现。
 
 ## 10. 公开接口
 
@@ -134,6 +136,7 @@ Runner 只返回 staging 中已验证的普通文件。FileArtifactStore：
 - `GET /api/v1/runs/{run_id}`：Run/Attempt、case summary、metrics、gates、Artifact 元数据。
 - `GET /api/v1/runs/{run_id}/events`：白名单化状态事件字段。
 - `GET /api/v1/runs/{run_id}/artifacts`：路径无关的 Artifact 元数据。
+- `GET /api/v1/runs/{run_id}/artifacts/{artifact_id}/content`：校验归属后在线查看或下载 Artifact。
 - `GET /health/live`、`GET /health/ready`：存活和依赖就绪。
 
 公开 wire 值为小写；数据库内部状态仍由显式枚举和 CHECK constraint 保护。
@@ -150,7 +153,8 @@ V1 使用 Compose/进程文本日志，不声称统一 JSON 结构化日志。Ru
 - 无认证/RBAC、多租户、通用 retry/cancel 和调度；仅支持显式套件的首次 `worker_lost` 自动重试一次。
 - Redis 无 HA，且不是权威状态源。
 - Locust 仅单用户、本地确定性靶场；无多节点压测。
-- Artifact 仅本地 named volume；无下载、删除、对象存储和 GC。
+- Workflow 仅支持可信 YAML 的顺序 HTTP 步骤、捕获、断言与清理；无分支、循环、并行或可视化编排。
+- Artifact 仅本地 named volume；无删除、对象存储和 GC。
 - Python 依赖有版本范围，容器标签未按 digest 锁定；不是 bit-for-bit reproducible。
 - GitHub Actions 已在托管 Ubuntu Runner 上完成 quality/integration/e2e 三 Job 绿色验证，但只覆盖当前提交和学生规模边界。
 - 无 Kubernetes 或生产部署证据。

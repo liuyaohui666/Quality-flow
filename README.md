@@ -2,7 +2,7 @@
 
 QualityFlow 是一个面向**预注册可信测试套件**的学生规模持续测试执行与质量门禁系统。它把一次测试从 API 提交、可靠投递、隔离执行、结果解析、质量判定到证据归档串成完整闭环，重点验证测试开发中的可靠性问题，而不是再做一个业务 CRUD 或测试用例管理页面。
 
-V1 使用 Python 3.12、FastAPI、PostgreSQL、Redis/Celery、pytest、Locust 和 Docker Compose。项目参考公开的软件工程实践设计，但不声称达到任何公司的生产规模或内部标准。
+V1 使用 Python 3.12、FastAPI、PostgreSQL、Redis/Celery、pytest、Locust、声明式 HTTP Workflow 和 Docker Compose。项目参考公开的软件工程实践设计，但不声称达到任何公司的生产规模或内部标准。
 
 > 当前状态：本地已经验证单元测试、真实 PostgreSQL/Redis 集成测试、最终镜像无缓存构建和空卷 Compose E2E。GitHub 托管 Ubuntu Runner 已完成 `quality`、`integration` 和 `e2e` 三个 Job 的真实绿色验证；包含 Restful Booker 接入代码的证据见 [GitHub Actions run #4](https://github.com/liuyaohui666/Quality-flow/actions/runs/32014084498)。
 
@@ -13,7 +13,7 @@ V1 使用 Python 3.12、FastAPI、PostgreSQL、Redis/Celery、pytest、Locust �
 - Redis/Celery 采用 at-least-once 传递；Worker 的数据库条件领取保证重复消息不会产生超出重试策略预算的额外有效结果。
 - Run 与 Attempt 分离，并用 lease token、心跳、过期时间和 Reconciler 识别 Worker 失联。
 - pytest 的断言失败、Locust 的性能门禁失败、Runner 基础设施失败和执行超时具有不同终态。
-- stdout、stderr、JUnit XML 和 Locust CSV 按 Run/Attempt 隔离，公开 API 只返回安全元数据。
+- stdout、stderr、JUnit XML、Locust CSV 和脱敏 Workflow 报告按 Run/Attempt 隔离，公开 API 只返回安全元数据。
 - CI 客户端仅在 `completed/passed` 时退出 `0`。
 
 ## 架构
@@ -25,7 +25,7 @@ flowchart LR
     PG --> Dispatcher["Outbox Dispatcher"]
     Dispatcher --> Redis[("Redis / Celery transport")]
     Redis --> Worker["Celery Worker"]
-    Worker --> Runner["pytest / Locust Runner"]
+    Worker --> Runner["pytest / Locust / Workflow Runner"]
     Runner --> Target["Deterministic demo target"]
     Runner --> Store["Attempt-scoped ArtifactStore"]
     Worker --> PG
@@ -38,14 +38,14 @@ flowchart LR
 | PostgreSQL | Run、Attempt、结果、事件和 Outbox 的唯一权威状态源 |
 | Dispatcher | 轮询未发布 Outbox，向 Celery 投递仅含标识符的消息 |
 | Redis/Celery | 非权威的异步传输层；不承担业务状态 |
-| Worker/Runner | 领取 Run，在独立工作区执行固定 pytest/Locust 命令并生成结构化结果 |
+| Worker/Runner | 领取 Run，在独立工作区执行固定 pytest/Locust 命令或可信 HTTP Workflow，并生成统一结构化结果 |
 | Reconciler | 扫描过期租约并围栏旧 Worker；仅为显式启用策略的首次 `worker_lost` 安排一次重试，否则收敛到基础设施失败 |
 | ArtifactStore | 原子复制诊断文件，记录 SHA-256、大小、MIME 和 Attempt 归属 |
-| Demo Target | 只在本地稳定制造成功、断言失败、超时和 P95 退化 |
+| Demo Target | 只在本地稳定制造成功、断言失败、超时、P95 退化和依赖型 CRUD 工作流 |
 
 更完整的数据流、事务边界和竞态说明见 [架构文档](docs/architecture.md)，能力到证据的映射见 [证据矩阵](docs/evidence-matrix.md)。
 
-## 五个确定性场景
+## 六个确定性场景
 
 | 套件 / 场景 | 制造机制 | 预期终态 | 关键证据 |
 | --- | --- | --- | --- |
@@ -54,6 +54,7 @@ flowchart LR
 | `demo-api / slow` | 靶场等待 5 秒，超过 3 秒执行预算 | `timed_out/unknown` | timed_out Attempt、无伪造 JUnit 成功 |
 | `demo-load / baseline` | 本地即时响应，满足请求数/错误率/P95 门禁 | `completed/passed` | Locust 指标和性能门禁通过 |
 | `demo-load / degraded` | 每次响应固定延迟 350 ms，超过 P95 250 ms | `completed/failed` | HTTP 错误率为 0，`p95_ms` 门禁失败 |
+| `demo-workflow` | 创建资源后捕获 ID，依次查询、修改、复查并清理 | `completed/passed` | 5 个 step case、功能门禁、脱敏 Workflow JSON 报告 |
 
 后三个非通过终态是项目刻意制造的验证证据，不代表平台启动失败。
 
@@ -67,20 +68,20 @@ Set-Location quality-flow
 .\qualityflow.ps1 start
 ```
 
-脚本会检查 Docker、构建并启动固定的 `quality-flow-demo` Compose 项目、等待 API 就绪，然后打开 `http://127.0.0.1:18000/ui/`。浅色测试运营控制台按运行概览、运行任务、创建测试、套件目录、服务状态和 API 文档组织；概览与任务列表复用真实 Run 数据，套件目录来自受校验的注册表。创建页可编辑套件允许的业务 JSON，并在提交前核对执行摘要。Run 完成后，可继续查看逐用例结果、门禁、事件，并在线查看或下载 stdout、stderr、JUnit XML 和 Locust CSV。
+脚本会检查 Docker、构建并启动固定的 `quality-flow-demo` Compose 项目、等待 API 就绪，然后打开 `http://127.0.0.1:18000/ui/`。浅色测试运营控制台按运行概览、运行任务、创建测试、套件目录、服务状态和 API 文档组织；概览与任务列表复用真实 Run 数据，套件目录来自受校验的注册表。创建页可编辑套件允许的业务 JSON，并在提交前核对执行摘要。Run 完成后，可继续查看逐用例结果、门禁、事件，并在线查看或下载 stdout、stderr、JUnit XML、Locust CSV 和 Workflow JSON 报告。
 
 ### 页面如何描述一次测试
 
 创建页把输入分成四层，避免把业务数据和执行命令混在一起：
 
 1. **测试类型**：例如接口/功能测试或性能测试，只负责筛选套件；
-2. **注册套件**：来自 `config/suites.yaml`，决定可信的 pytest/Locust 执行方式；
+2. **注册套件**：来自 `config/suites.yaml`，决定可信的 pytest/Locust/Workflow 执行方式；
 3. **运行参数**：只能从套件声明的白名单值中选择，例如 `scenario=ok`；
 4. **业务请求体**：套件可选声明 JSON Schema 和安全示例，测试人员仍可在编辑器中输入任意符合该契约的 JSON 字段值。
 
 页面的“载入安全示例”“格式化 JSON”“校验请求体”和“提交 Run”分别对应本地编辑辅助与 `POST /api/v1/runs`；运行列表、详情刷新、健康检查、Artifact 查看/下载也都封装为页面操作。浏览器校验用于尽早提示，服务端 JSON Schema 校验才是最终准入标准。
 
-请求体最外层必须是 JSON 对象且不超过 64 KiB。它会作为 Run 快照保存到 PostgreSQL，并仅通过受控子进程环境变量交给已注册套件；不会进入命令行参数、Outbox 或 Redis 消息。**不要在控制台填写真实密码、生产 Token 或个人隐私数据。**
+请求体最外层必须是 JSON 对象且不超过 64 KiB。它会作为 Run 快照保存到 PostgreSQL；pytest/Locust 套件通过受控子进程环境变量读取，Workflow 套件通过受限模板上下文读取。请求体不会进入命令行参数、Outbox 或 Redis 消息。**不要在控制台填写真实密码、生产 Token 或个人隐私数据。**
 
 日常维护只需以下短命令：
 
@@ -133,6 +134,25 @@ Invoke-RestMethod "http://127.0.0.1:18000/api/v1/runs/$($run.run_id)/artifacts"
 ```
 
 `POST` 返回 `202` 表示已持久化并排队，不表示测试已经通过。公开状态和结果使用小写值。
+
+## 依赖型接口工作流
+
+`demo-workflow` 演示了不靠测试代码手工串联的接口依赖：平台先创建资源，从响应中捕获 `id`，再把该值注入后续查询、修改和删除请求。触发示例：
+
+```json
+{
+  "suite_id": "demo-workflow",
+  "parameters": {},
+  "request_body": {
+    "name": "Ada",
+    "updated_name": "Grace"
+  }
+}
+```
+
+可信工作流定义位于 `demo_suites/workflow/resource_lifecycle.yaml`，支持顺序步骤、请求体/参数/环境变量模板、前序响应字段捕获、HTTP 状态断言、JSON 子集断言、JSON Schema 断言以及条件清理。每一步会转换成一个 CaseResult，整体执行功能质量门禁，并生成可在线查看或下载的脱敏 `workflow-report.json`。
+
+工作流中的目标响应不符合预期属于 `completed/failed`；Run 总预算耗尽属于 `timed_out/unknown`；注册的工作流文件本身无效才属于 `infra_failed/unknown`。当前只支持可信、预注册、顺序执行的 HTTP 工作流，不支持分支、循环、并行步骤、可视化编排、OpenAPI 导入或用户提交任意 URL。
 
 ## 可选：手工触发公开 Restful Booker
 
@@ -199,7 +219,7 @@ docker compose -p quality-flow-demo config --quiet
 
 1. `quality`：Ruff、全部单元测试、独立 POSIX 进程树清理回归；
 2. `integration`：隔离 PostgreSQL/Redis、Alembic 迁移、Outbox/lease/Worker 集成测试；
-3. `e2e`：最终镜像无缓存构建、八服务空卷启动、五场景、幂等和 CI gate 退出码。
+3. `e2e`：最终镜像无缓存构建、八服务空卷启动、六场景、幂等和 CI gate 退出码。
 
 工作流使用只读仓库权限、固定 SHA 的官方 Actions、有限 Job 超时和命名 Compose 项目。失败时先收集限定的状态/日志/JUnit，再由 `scripts/audit_ci_evidence.py` 检查扩展名、大小、符号链接、凭据式 URL、认证头和 canary；只有审计通过才保留 14 天。清理只作用于当前 Job 的命名项目，不使用系统级 prune。
 
@@ -271,6 +291,7 @@ effective execution and stale result overwrite.”
 - 不提供通用的自动重试/取消、优先级和定时任务；Worker 租约丢失只支持套件显式启用的一次受控重试；
 - 无高可用/灾备、跨主机 Worker 或 exactly-once 保证；
 - 无多节点压测，只允许对本地确定性靶场执行单用户 Locust 场景；
+- HTTP Workflow 仅支持可信 YAML 的顺序步骤、字段捕获和清理；无分支、循环、并行、可视化编排或 OpenAPI 导入；
 - 无任意 Git 仓库接入和恶意代码沙箱；
 - 无对象存储、Artifact 删除/GC；文件查看与下载仅适用于单机 Artifact 卷；
 - 无统一 JSON 日志、指标后端和告警系统；
@@ -284,7 +305,7 @@ effective execution and stale result overwrite.”
 ```text
 src/quality_flow/       领域、应用、数据库、API、Runner、Worker
 config/suites.yaml      预注册套件、参数白名单和门禁策略
-demo_suites/            pytest/Locust 演示资产
+demo_suites/            pytest/Locust/Workflow 演示资产
 demo_target/            确定性本地靶场
 migrations/             Alembic PostgreSQL 迁移
 scripts/                CI gate、等待、健康和证据审计客户端

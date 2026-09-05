@@ -11,6 +11,8 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 import yaml
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 
 _IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
@@ -219,6 +221,13 @@ def _parse_step(raw: Any, location: str) -> WorkflowStep:
     schema = expect_raw.get("json_schema")
     if schema is not None and not isinstance(schema, Mapping):
         raise WorkflowDefinitionError(f"{location}.expect.json_schema must be a mapping")
+    if schema is not None:
+        try:
+            Draft202012Validator.check_schema(dict(schema))
+        except SchemaError as error:
+            raise WorkflowDefinitionError(
+                f"{location}.expect.json_schema is invalid: {error.message}"
+            ) from error
 
     capture_raw = _string_key_mapping(step.get("capture", {}), f"{location}.capture")
     captures: dict[str, str] = {}

@@ -187,14 +187,21 @@ def test_delivery_documents_keep_claims_and_commands_truthful() -> None:
         "infra_failed/unknown",
     ):
         assert pair in combined
-    for scenario in ("demo-api / ok", "demo-api / error", "demo-api / slow", "demo-load / baseline", "demo-load / degraded"):
+    for scenario in (
+        "demo-api / ok",
+        "demo-api / error",
+        "demo-api / slow",
+        "demo-load / baseline",
+        "demo-load / degraded",
+        "demo-workflow",
+    ):
         assert scenario in readme
 
     assert "at-least-once" in combined
     assert "exactly-once" in combined.lower()
     assert "可信套件" in combined
     assert "不是恶意代码安全沙箱" in combined
-    assert "不提供 Artifact 文件下载接口" in combined
+    assert "在线查看或下载" in combined
     assert "GitHub 托管 Ubuntu Runner 已完成" in readme
     assert "认证/RBAC" in readme
     assert "自动重试/取消" in readme
@@ -214,6 +221,7 @@ def test_delivery_documents_keep_claims_and_commands_truthful() -> None:
         "租约过期",
         "pytest 功能门禁",
         "Locust 性能门禁",
+        "声明式接口依赖",
         "Artifact 隔离",
         "CI 退出码",
     ):

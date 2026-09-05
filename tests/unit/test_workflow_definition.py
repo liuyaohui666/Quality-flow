@@ -141,3 +141,25 @@ def test_capture_path_reads_nested_json_and_rejects_unavailable_value() -> None:
         extract_json_path(payload, "$.data.unknown")
     with pytest.raises(WorkflowDefinitionError):
         extract_json_path(payload, "data.resource.id")
+
+
+def test_invalid_json_schema_is_rejected_before_execution(tmp_path: Path) -> None:
+    path = _write_definition(
+        tmp_path,
+        """
+version: 1
+name: invalid-schema
+base_url: http://target
+steps:
+  - id: read
+    name: Read
+    request: {method: GET, path: /fast}
+    expect:
+      status: 200
+      json_schema:
+        type: definitely-not-a-json-schema-type
+""",
+    )
+
+    with pytest.raises(WorkflowDefinitionError, match="json_schema"):
+        WorkflowDefinition.from_yaml(path)

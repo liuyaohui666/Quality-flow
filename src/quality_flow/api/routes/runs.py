@@ -114,6 +114,7 @@ _ARTIFACT_FILENAMES = {
     "stderr": "stderr.log",
     "junit_xml": "junit.xml",
     "locust_stats": "locust_stats.csv",
+    "workflow_report": "workflow-report.json",
 }
 
 

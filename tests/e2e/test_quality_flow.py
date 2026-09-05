@@ -186,6 +186,61 @@ def test_registered_demo_scenarios(
             assert "p95_ms" in run["gates"][0]["reason_codes"]
 
 
+def test_dependent_http_workflow_runs_and_cleans_up(
+    api_client: httpx.Client,
+) -> None:
+    response = api_client.post(
+        "/api/v1/runs",
+        headers={"Idempotency-Key": f"e2e-demo-workflow-{uuid4()}"},
+        json={
+            "suite_id": "demo-workflow",
+            "parameters": {},
+            "request_body": {"name": "Ada", "updated_name": "Grace"},
+        },
+    )
+    assert response.status_code == 202, response.text
+    run_id = response.json()["run_id"]
+
+    run = wait_for_terminal_run(
+        api_client,
+        run_id,
+        expected=("completed", "passed"),
+        timeout_seconds=90,
+    )
+    artifacts_response = api_client.get(f"/api/v1/runs/{run_id}/artifacts")
+    artifacts_response.raise_for_status()
+    artifacts = artifacts_response.json()["artifacts"]
+
+    assert run["case_summary"] == {
+        "total": 5,
+        "passed": 5,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+    }
+    assert [(gate["gate_type"], gate["passed"]) for gate in run["gates"]] == [
+        ("functional", True)
+    ]
+    assert len(artifacts) == 1
+    assert artifacts[0]["artifact_type"] == "workflow_report"
+    assert artifacts[0]["mime_type"] == "application/json"
+
+    report_response = api_client.get(
+        f"/api/v1/runs/{run_id}/artifacts/{artifacts[0]['artifact_id']}/content"
+    )
+    report_response.raise_for_status()
+    report = report_response.json()
+    assert report["workflow"] == "resource-lifecycle"
+    assert [step["id"] for step in report["steps"]] == [
+        "create",
+        "read-created",
+        "update",
+        "read-updated",
+        "delete",
+    ]
+    assert all(step["status"] == "passed" for step in report["steps"])
+
+
 def test_duplicate_submission_has_one_effective_attempt_and_terminal_event(
     api_client: httpx.Client,
 ) -> None:

@@ -256,6 +256,30 @@ def test_artifact_content_uses_database_owned_uri(tmp_path: Path) -> None:
     assert store.resolved_uris == [run.artifacts[0].uri, run.artifacts[0].uri]
 
 
+def test_workflow_report_download_has_descriptive_filename(tmp_path: Path) -> None:
+    run = _run()
+    artifact_id = uuid4()
+    artifact_path = tmp_path / "opaque-artifact"
+    artifact_path.write_text('{"workflow_id":"resource-lifecycle"}', encoding="utf-8")
+    run.artifacts = [
+        SimpleNamespace(
+            artifact_id=artifact_id,
+            attempt_id=run.attempts[0].attempt_id,
+            artifact_type="workflow_report",
+            uri=f"runs/{run.run_id}/{run.attempts[0].attempt_id}/{uuid4().hex}",
+            artifact_metadata={"mime_type": "application/json"},
+        )
+    ]
+    client = _console_client(ConsoleRunReader([run]), FakeArtifactStore(artifact_path))
+
+    response = client.get(
+        f"/api/v1/runs/{run.run_id}/artifacts/{artifact_id}/content?download=true"
+    )
+
+    assert response.status_code == 200
+    assert "workflow-report.json" in response.headers["content-disposition"]
+
+
 def test_artifact_from_another_run_is_hidden(tmp_path: Path) -> None:
     owner = _run()
     other = _run()
