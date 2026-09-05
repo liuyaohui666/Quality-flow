@@ -21,7 +21,16 @@ _ROOT_KEYS = {
     "request_timeout_seconds",
     "cases",
 }
-_CASE_KEYS = {"id", "name", "prompt", "expect"}
+_CASE_KEYS = {
+    "id",
+    "name",
+    "prompt",
+    "expect",
+    "turns",
+    "expected_tool_sequence",
+    "max_total_tokens",
+}
+_TURN_KEYS = {"prompt", "expect"}
 _EXPECT_KEYS = {
     "status",
     "decision",
@@ -54,11 +63,25 @@ class AgentExpectation:
 
 
 @dataclass(frozen=True)
+class AgentEvalTurn:
+    prompt: str
+    expectation: AgentExpectation
+
+
+@dataclass(frozen=True)
 class AgentEvalCase:
     case_id: str
     name: str
-    prompt: str
-    expectation: AgentExpectation
+    turns: tuple[AgentEvalTurn, ...]
+    legacy_prompt: bool
+    expected_tool_sequence: tuple[str, ...] = ()
+    max_total_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "turns", tuple(self.turns))
+        object.__setattr__(
+            self, "expected_tool_sequence", tuple(self.expected_tool_sequence)
+        )
 
 
 @dataclass(frozen=True)
@@ -121,55 +144,104 @@ def _parse_case(raw: Any, location: str) -> AgentEvalCase:
     _reject_unknown(case, _CASE_KEYS, location)
     case_id = _identifier(case.get("id"), f"{location}.id")
     name = _text(case.get("name"), f"{location}.name")
-    prompt = _text(case.get("prompt"), f"{location}.prompt")
-    expect = _mapping(case.get("expect"), f"{location}.expect")
-    _reject_unknown(expect, _EXPECT_KEYS, f"{location}.expect")
+    has_legacy = "prompt" in case or "expect" in case
+    has_turns = "turns" in case
+    if has_legacy == has_turns:
+        raise AgentEvalDefinitionError(
+            f"{location} must define exactly one of prompt/expect or turns"
+        )
+    if has_legacy:
+        turns = (
+            AgentEvalTurn(
+                prompt=_text(case.get("prompt"), f"{location}.prompt"),
+                expectation=_parse_expectation(
+                    case.get("expect"), f"{location}.expect"
+                ),
+            ),
+        )
+    else:
+        raw_turns = case.get("turns")
+        if not isinstance(raw_turns, list) or not 1 <= len(raw_turns) <= 20:
+            raise AgentEvalDefinitionError(
+                f"{location}.turns must contain between 1 and 20 items"
+            )
+        turns = tuple(
+            _parse_turn(item, f"{location}.turns[{index}]")
+            for index, item in enumerate(raw_turns)
+        )
+    expected_tool_sequence = _ordered_text_list(
+        case.get("expected_tool_sequence", []),
+        f"{location}.expected_tool_sequence",
+    )
+    max_total_tokens = case.get("max_total_tokens")
+    if max_total_tokens is not None and (
+        type(max_total_tokens) is not int
+        or not 1 <= max_total_tokens <= 1_000_000
+    ):
+        raise AgentEvalDefinitionError(
+            f"{location}.max_total_tokens must be a positive integer"
+        )
+    return AgentEvalCase(
+        case_id=case_id,
+        name=name,
+        turns=turns,
+        legacy_prompt=has_legacy,
+        expected_tool_sequence=expected_tool_sequence,
+        max_total_tokens=max_total_tokens,
+    )
+
+
+def _parse_turn(raw: Any, location: str) -> AgentEvalTurn:
+    turn = _mapping(raw, location)
+    _reject_unknown(turn, _TURN_KEYS, location)
+    return AgentEvalTurn(
+        prompt=_text(turn.get("prompt"), f"{location}.prompt"),
+        expectation=_parse_expectation(turn.get("expect"), f"{location}.expect"),
+    )
+
+
+def _parse_expectation(raw: Any, location: str) -> AgentExpectation:
+    expect = _mapping(raw, location)
+    _reject_unknown(expect, _EXPECT_KEYS, location)
     status = expect.get("status", 200)
     if type(status) is not int or not 100 <= status <= 599:
-        raise AgentEvalDefinitionError(f"{location}.expect.status is invalid")
+        raise AgentEvalDefinitionError(f"{location}.status is invalid")
     decision = expect.get("decision")
     if decision not in _DECISIONS:
-        raise AgentEvalDefinitionError(f"{location}.expect.decision is invalid")
+        raise AgentEvalDefinitionError(f"{location}.decision is invalid")
     answer_contains = _text_list(
-        expect.get("answer_contains", []), f"{location}.expect.answer_contains"
+        expect.get("answer_contains", []), f"{location}.answer_contains"
     )
     allowed_tools = frozenset(
-        _text_list(expect.get("allowed_tools", []), f"{location}.expect.allowed_tools")
+        _text_list(expect.get("allowed_tools", []), f"{location}.allowed_tools")
     )
     required_tools = frozenset(
-        _text_list(
-            expect.get("required_tools", []), f"{location}.expect.required_tools"
-        )
+        _text_list(expect.get("required_tools", []), f"{location}.required_tools")
     )
     if not required_tools <= allowed_tools:
         raise AgentEvalDefinitionError(
-            f"{location}.expect.required_tools must be included in allowed_tools"
+            f"{location}.required_tools must be included in allowed_tools"
         )
     forbid_scope_expansion = expect.get("forbid_scope_expansion", True)
     if type(forbid_scope_expansion) is not bool:
         raise AgentEvalDefinitionError(
-            f"{location}.expect.forbid_scope_expansion must be boolean"
+            f"{location}.forbid_scope_expansion must be boolean"
         )
     max_output_tokens = expect.get("max_output_tokens")
     if max_output_tokens is not None and (
         type(max_output_tokens) is not int or not 1 <= max_output_tokens <= 1_000_000
     ):
         raise AgentEvalDefinitionError(
-            f"{location}.expect.max_output_tokens must be a positive integer"
+            f"{location}.max_output_tokens must be a positive integer"
         )
-    return AgentEvalCase(
-        case_id=case_id,
-        name=name,
-        prompt=prompt,
-        expectation=AgentExpectation(
-            status=status,
-            decision=decision,
-            answer_contains=answer_contains,
-            allowed_tools=allowed_tools,
-            required_tools=required_tools,
-            forbid_scope_expansion=forbid_scope_expansion,
-            max_output_tokens=max_output_tokens,
-        ),
+    return AgentExpectation(
+        status=status,
+        decision=decision,
+        answer_contains=answer_contains,
+        allowed_tools=allowed_tools,
+        required_tools=required_tools,
+        forbid_scope_expansion=forbid_scope_expansion,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -210,4 +282,12 @@ def _text_list(value: Any, location: str) -> tuple[str, ...]:
         raise AgentEvalDefinitionError(f"{location} must be a list of strings")
     if len(value) != len(set(value)):
         raise AgentEvalDefinitionError(f"{location} must not contain duplicates")
+    return tuple(value)
+
+
+def _ordered_text_list(value: Any, location: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise AgentEvalDefinitionError(f"{location} must be a list of strings")
     return tuple(value)

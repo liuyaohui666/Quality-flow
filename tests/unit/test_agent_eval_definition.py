@@ -44,9 +44,87 @@ def test_definition_parses_strict_agent_evaluation_cases(tmp_path: Path) -> None
     assert definition.request_timeout_seconds == 5
     case = definition.cases[0]
     assert case.case_id == "weather-tool"
-    assert case.expectation.decision == "tool_call"
-    assert case.expectation.allowed_tools == frozenset({"weather.lookup"})
-    assert case.expectation.required_tools == frozenset({"weather.lookup"})
+    assert case.legacy_prompt is True
+    assert len(case.turns) == 1
+    assert case.turns[0].prompt == "What is the weather in Hefei?"
+    assert case.turns[0].expectation.decision == "tool_call"
+    assert case.turns[0].expectation.allowed_tools == frozenset({"weather.lookup"})
+    assert case.turns[0].expectation.required_tools == frozenset({"weather.lookup"})
+
+
+def test_definition_parses_multi_turn_conversation_and_aggregate_rules(
+    tmp_path: Path,
+) -> None:
+    definition = AgentEvalDefinition.from_yaml(
+        _write(
+            tmp_path,
+            """
+version: 1
+name: conversation-eval
+base_url: http://target.test
+path: /agent/respond
+cases:
+  - id: weather-calendar
+    name: Weather before calendar
+    turns:
+      - prompt: Check the weather in Hefei
+        expect:
+          decision: tool_call
+          allowed_tools: [weather.lookup]
+          required_tools: [weather.lookup]
+      - prompt: Schedule the review
+        expect:
+          decision: tool_call
+          allowed_tools: [calendar.create]
+          required_tools: [calendar.create]
+    expected_tool_sequence: [weather.lookup, calendar.create]
+    max_total_tokens: 100
+""",
+        )
+    )
+
+    case = definition.cases[0]
+    assert case.legacy_prompt is False
+    assert [turn.prompt for turn in case.turns] == [
+        "Check the weather in Hefei",
+        "Schedule the review",
+    ]
+    assert case.expected_tool_sequence == ("weather.lookup", "calendar.create")
+    assert case.max_total_tokens == 100
+
+
+@pytest.mark.parametrize(
+    "case_body,match",
+    [
+        (
+            "prompt: Legacy\n    turns: [{prompt: New, expect: {decision: answer}}]\n    expect: {decision: answer}",
+            "exactly one",
+        ),
+        ("turns: []", "between 1 and 20"),
+        ("turns: [{prompt: Only prompt}]", "expect"),
+        ("turns: [{prompt: One, expect: {decision: answer}}]\n    max_total_tokens: 0", "positive"),
+        (
+            "turns: [{prompt: One, expect: {decision: answer}}]\n    expected_tool_sequence: [weather.lookup, '']",
+            "list of strings",
+        ),
+    ],
+)
+def test_definition_rejects_invalid_conversation_shapes(
+    tmp_path: Path, case_body: str, match: str
+) -> None:
+    text = f"""
+version: 1
+name: conversation-eval
+base_url: http://target.test
+path: /agent/respond
+cases:
+  - id: conversation
+    name: Conversation
+    {case_body}
+"""
+
+    with pytest.raises(AgentEvalDefinitionError, match=match):
+        AgentEvalDefinition.from_yaml(_write(tmp_path, text))
 
 
 @pytest.mark.parametrize(
