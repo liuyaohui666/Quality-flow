@@ -2,7 +2,7 @@
 
 QualityFlow 是一个面向**预注册可信测试套件**的学生规模持续测试执行与质量门禁系统。它把一次测试从 API 提交、可靠投递、隔离执行、结果解析、质量判定到证据归档串成完整闭环，重点验证测试开发中的可靠性问题，而不是再做一个业务 CRUD 或测试用例管理页面。
 
-V1 使用 Python 3.12、FastAPI、PostgreSQL、Redis/Celery、pytest、Locust、声明式 HTTP Workflow、规则型 Agent Eval 和 Docker Compose。项目参考公开的软件工程实践设计，但不声称达到任何公司的生产规模或内部标准。
+V1 使用 Python 3.12、FastAPI、PostgreSQL、Redis/Celery、pytest、Locust、声明式 HTTP Workflow、Agent Eval 和 Docker Compose。除确定性 Agent 回归靶场外，还可以手工接入 DeepSeek，评测真实多轮工具型 Agent。项目参考公开的软件工程实践设计，但不声称达到任何公司的生产规模或内部标准。
 
 > 当前状态：本地已经验证单元测试、真实 PostgreSQL/Redis 集成测试、最终镜像无缓存构建和空卷 Compose E2E。GitHub 托管 Ubuntu Runner 已完成 `quality`、`integration` 和 `e2e` 三个 Job 的真实绿色验证；包含 Restful Booker 接入代码的证据见 [GitHub Actions run #4](https://github.com/liuyaohui666/Quality-flow/actions/runs/32014084498)。
 
@@ -38,7 +38,7 @@ flowchart LR
 | PostgreSQL | Run、Attempt、结果、事件和 Outbox 的唯一权威状态源 |
 | Dispatcher | 轮询未发布 Outbox，向 Celery 投递仅含标识符的消息 |
 | Redis/Celery | 非权威的异步传输层；不承担业务状态 |
-| Worker/Runner | 领取 Run，在独立工作区执行固定 pytest/Locust、可信 HTTP Workflow 或规则型 Agent Eval，并生成统一结构化结果 |
+| Worker/Runner | 领取 Run，在独立工作区执行固定 pytest/Locust、可信 HTTP Workflow 或 Agent Eval，并生成统一结构化结果 |
 | Reconciler | 扫描过期租约并围栏旧 Worker；仅为显式启用策略的首次 `worker_lost` 安排一次重试，否则收敛到基础设施失败 |
 | ArtifactStore | 原子复制诊断文件，记录 SHA-256、大小、MIME 和 Attempt 归属 |
 | Demo Target | 在本地稳定制造功能、性能、依赖型 CRUD 和结构化 Agent 行为 |
@@ -161,7 +161,7 @@ Invoke-RestMethod "http://127.0.0.1:18000/api/v1/runs/$($run.run_id)/artifacts"
 
 ## Agent 应用质量评测
 
-`demo-agent-eval` 是平台向 AI/Agent 测试演进的第一步。它不是聊天机器人，也不调用付费模型，而是用本地确定性 Agent 靶场验证一套可迁移到真实 Agent HTTP 接口的质量契约：
+`demo-agent-eval` 是平台向 AI/Agent 测试演进的确定性基线。它使用本地规则型 Agent 靶场，在不依赖外网和模型余额的情况下验证一套同样适用于真实 Agent HTTP 接口的质量契约：
 
 - 多轮对话中是否记住前文给出的业务信息；
 - 需要连续使用工具时，是否只调用允许的工具并保持正确顺序；
@@ -172,9 +172,24 @@ Invoke-RestMethod "http://127.0.0.1:18000/api/v1/runs/$($run.run_id)/artifacts"
 
 提交时在控制台选择 `Agent 应用评测` 和 `demo-agent-eval`，载入示例后可修改 `topic`。三个多轮会话会分别成为 CaseResult，其中上下文记忆会话独立采样三次；每次采样都会从空历史开始，逐轮输入、响应、断言、耗时和工具轨迹写入报告。天气和日历工具还会校验 `city`、`region` 参数契约以及单轮调用次数。平台同时保存用例通过率、采样通过率、行为一致率、工具违规率、P95 延迟、Token 和实际轮数，并生成可查看、可下载、按敏感字段名脱敏的 `agent-eval-report.json`。原有单轮 `prompt + expect` 评测文件仍然兼容。
 
-稳定性不要求回答文字完全相同，而是比较每轮 decision 和整段工具调用轨迹；这样既容许自然语言表述变化，也能抓住同一输入有时回答、有时拒绝或乱用工具的行为漂移。这一版仍使用确定性规则作为测试预言，因此适合 CI 回归和安全边界验证；它不声称能够判断开放式回答“是否足够好”。语义相似度、RAG 召回指标、真实模型接入和 LLM-as-judge 仍属于后续能力。
+稳定性不要求回答文字完全相同，而是比较每轮 decision 和整段工具调用轨迹；这样既容许自然语言表述变化，也能抓住同一输入有时回答、有时拒绝或乱用工具的行为漂移。确定性套件适合 CI 回归和安全边界验证；它不声称能够判断开放式回答“是否足够好”。语义相似度、RAG 召回指标和 LLM-as-judge 仍属于后续能力。
 
 `demo-agent-regression` 提供正常、上下文遗忘、工具参数错误和提示词注入绕过四个可控场景，用于证明上述规则能够发现真实类型的 Agent 缺陷。安全违规、拒绝绕过和无效响应不会被宽松的重复采样通过率掩盖。操作与预期结果见 [Agent 安全回归演示](docs/agent-regression-guide.md)。
+
+### 可选：手工评测真实 DeepSeek Agent
+
+`deepseek-agent-eval` 会调用真正的 DeepSeek 模型，而不是规则模拟。被测 Agent 会把完整对话发送给模型，允许模型选择 `weather.lookup` 或 `calendar.create`，在本地校验参数并执行无副作用的沙箱工具，再把工具结果交还模型生成最终回答。整个工具循环最多三轮，平台随后检查上下文记忆、工具白名单、参数 Schema、提示词注入拒绝、延迟和 Token。
+
+真实模型存在费用、网络波动和非确定性，因此该套件只允许手工触发，不进入 GitHub Actions。启动前在当前 PowerShell 安全输入密钥；输入内容不会进入命令历史：
+
+```powershell
+$env:DEEPSEEK_API_KEY = Read-Host "DeepSeek API key"
+.\qualityflow.ps1 start
+```
+
+启动后在控制台选择 `Agent 应用评测` → `deepseek-agent-eval`，载入示例并提交。若未配置密钥，Run 会收到 Agent 端的 `503` 并按测试失败留下报告；不会回退成伪造的模型结果。默认模型是 `deepseek-v4-flash`，可以在启动前设置 `$env:DEEPSEEK_MODEL` 修改。密钥只注入 `demo-target` 容器，不会进入 Run、Outbox、Redis、数据库、Artifact 或浏览器。Docker 管理员仍可检查容器环境，因此只应使用可轮换、限额的开发密钥。
+
+密钥已经出现在聊天、截图或其他非受控位置时，应先在服务商后台作废并生成新密钥，再执行上述命令。
 
 ## 可选：手工触发公开 Restful Booker
 

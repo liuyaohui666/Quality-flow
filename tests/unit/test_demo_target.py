@@ -1,9 +1,34 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from fastapi.testclient import TestClient
 import pytest
 
 from demo_target.app import create_app
+from demo_target.deepseek_agent import (
+    AgentResult,
+    DeepSeekProviderError,
+    DeepSeekProviderTimeout,
+)
+
+
+class StubDeepSeekAgent:
+    def __init__(
+        self,
+        result: AgentResult | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.result = result
+        self.error = error
+        self.messages: list[list[dict[str, str]]] = []
+
+    def respond(self, messages: Sequence[Mapping[str, str]]) -> AgentResult:
+        self.messages.append([dict(message) for message in messages])
+        if self.error is not None:
+            raise self.error
+        assert self.result is not None
+        return self.result
 
 
 def test_health_and_immediate_work_modes_are_deterministic() -> None:
@@ -219,3 +244,96 @@ def test_unknown_agent_scenario_is_rejected() -> None:
     client = TestClient(create_app())
     assert client.post("/agent/respond", params={"scenario": "anything"},
                        json={"prompt": "Explain quality"}).status_code == 422
+
+
+def test_deepseek_agent_endpoint_delegates_prompt_and_returns_existing_contract() -> None:
+    agent = StubDeepSeekAgent(AgentResult(
+        decision="tool_call",
+        answer="The weather in Hefei is clear.",
+        tool_calls=({"name": "weather.lookup", "arguments": {"city": "Hefei"}},),
+        scope_expanded=False,
+        input_tokens=12,
+        output_tokens=5,
+    ))
+    client = TestClient(create_app(deepseek_agent=agent))
+
+    response = client.post(
+        "/agent/deepseek/respond",
+        json={"prompt": "What is the weather in Hefei?"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "decision": "tool_call",
+        "answer": "The weather in Hefei is clear.",
+        "tool_calls": [
+            {"name": "weather.lookup", "arguments": {"city": "Hefei"}}
+        ],
+        "scope_expanded": False,
+        "usage": {"input_tokens": 12, "output_tokens": 5},
+    }
+    assert agent.messages == [[
+        {"role": "user", "content": "What is the weather in Hefei?"}
+    ]]
+
+
+def test_deepseek_agent_endpoint_forwards_complete_conversation() -> None:
+    agent = StubDeepSeekAgent(AgentResult(
+        decision="answer",
+        answer="Your selected region is Hefei.",
+        tool_calls=(),
+        scope_expanded=False,
+        input_tokens=20,
+        output_tokens=7,
+    ))
+    client = TestClient(create_app(deepseek_agent=agent))
+    messages = [
+        {"role": "user", "content": "Remember my region is Hefei"},
+        {"role": "assistant", "content": "I remembered Hefei"},
+        {"role": "user", "content": "Which region did I choose?"},
+    ]
+
+    response = client.post("/agent/deepseek/respond", json={"messages": messages})
+
+    assert response.status_code == 200
+    assert agent.messages == [messages]
+
+
+def test_deepseek_agent_endpoint_is_unavailable_without_local_key() -> None:
+    client = TestClient(create_app(deepseek_environment={}))
+
+    response = client.post(
+        "/agent/deepseek/respond", json={"prompt": "Explain quality"}
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "DeepSeek Agent is not configured"}
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "detail"),
+    [
+        (
+            DeepSeekProviderTimeout("upstream secret body"),
+            504,
+            "DeepSeek Agent request timed out",
+        ),
+        (
+            DeepSeekProviderError("upstream secret body"),
+            502,
+            "DeepSeek Agent provider failed",
+        ),
+    ],
+)
+def test_deepseek_agent_endpoint_maps_provider_failures_without_leaking_details(
+    error: Exception, status_code: int, detail: str,
+) -> None:
+    client = TestClient(create_app(deepseek_agent=StubDeepSeekAgent(error=error)))
+
+    response = client.post(
+        "/agent/deepseek/respond", json={"prompt": "Explain quality"}
+    )
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+    assert "upstream secret body" not in response.text

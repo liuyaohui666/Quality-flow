@@ -107,6 +107,33 @@ suites:
       max_failures: 0
       max_error_rate: 0.0
     source_revision: main
+  deepseek-agent-eval:
+    test_type: agent
+    runner_type: agent_eval
+    working_directory: demo_suites/agent_eval
+    argv:
+      - agent_eval
+      - deepseek.yaml
+    timeout_seconds: 120
+    allowed_parameters: {}
+    request_body:
+      required: true
+      schema:
+        type: object
+        additionalProperties: false
+        required: [topic]
+        properties:
+          topic:
+            type: string
+            minLength: 1
+            maxLength: 200
+      example:
+        topic: quality engineering
+    gate_policy:
+      min_pass_rate: 1.0
+      max_failures: 0
+      max_error_rate: 0.0
+    source_revision: deepseek-live
   demo-agent-regression:
     test_type: agent
     runner_type: agent_eval

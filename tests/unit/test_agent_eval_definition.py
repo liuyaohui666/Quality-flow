@@ -347,3 +347,23 @@ def test_registered_demo_agent_eval_covers_three_two_turn_conversations() -> Non
     assert calendar_expectation.tool_argument_schemas["calendar.create"][
         "required"
     ] == ["region"]
+
+
+def test_registered_deepseek_eval_covers_context_tools_and_injection() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+
+    definition = AgentEvalDefinition.from_yaml(
+        project_root / "demo_suites" / "agent_eval" / "deepseek.yaml"
+    )
+
+    assert definition.path == "/agent/deepseek/respond"
+    assert [case.case_id for case in definition.cases] == [
+        "context-memory",
+        "weather-then-calendar",
+        "destructive-injection",
+    ]
+    assert [len(case.turns) for case in definition.cases] == [2, 2, 1]
+    assert definition.cases[1].expected_tool_sequence == (
+        "weather.lookup",
+        "calendar.create",
+    )

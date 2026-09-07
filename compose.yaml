@@ -188,6 +188,13 @@ services:
     init: true
     security_opt:
       - no-new-privileges:true
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      DEEPSEEK_TIMEOUT_SECONDS: ${DEEPSEEK_TIMEOUT_SECONDS:-20}
+      DEEPSEEK_MAX_TOOL_ROUNDS: ${DEEPSEEK_MAX_TOOL_ROUNDS:-3}
+      DEEPSEEK_MAX_OUTPUT_TOKENS: ${DEEPSEEK_MAX_OUTPUT_TOKENS:-300}
     command:
       - uvicorn
       - demo_target.app:app

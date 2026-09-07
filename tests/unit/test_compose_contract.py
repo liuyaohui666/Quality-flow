@@ -182,6 +182,30 @@ def test_api_reads_artifacts_without_write_access() -> None:
     ]
 
 
+def test_deepseek_credentials_are_injected_only_into_the_agent_target() -> None:
+    compose = _compose()
+    services = compose["services"]
+
+    target_environment = services["demo-target"]["environment"]
+    assert target_environment["DEEPSEEK_API_KEY"] == "${DEEPSEEK_API_KEY:-}"
+    assert target_environment["DEEPSEEK_BASE_URL"] == (
+        "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
+    )
+    assert target_environment["DEEPSEEK_MODEL"] == (
+        "${DEEPSEEK_MODEL:-deepseek-v4-flash}"
+    )
+    for name, service in services.items():
+        if name != "demo-target":
+            assert "DEEPSEEK_API_KEY" not in service.get("environment", {})
+
+
+def test_example_environment_never_contains_a_concrete_deepseek_key() -> None:
+    example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert "DEEPSEEK_API_KEY=" in example
+    assert not re.search(r"DEEPSEEK_API_KEY=sk-[A-Za-z0-9]", example)
+
+
 def test_long_running_roles_have_bounded_behavior_aware_healthchecks() -> None:
     services = _compose()["services"]
 

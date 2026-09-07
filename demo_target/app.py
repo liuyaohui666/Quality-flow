@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from threading import Lock
-from typing import Literal
+from typing import Literal, Protocol
 
 from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from demo_target.deepseek_agent import (
+    AgentResult,
+    DeepSeekAgent,
+    DeepSeekConfigurationError,
+    DeepSeekProviderError,
+    DeepSeekProviderTimeout,
+)
 
 
 Sleep = Callable[[float], Awaitable[None]]
@@ -51,7 +59,16 @@ class AgentRequest(BaseModel):
         return self
 
 
-def create_app(*, sleep: Sleep = asyncio.sleep) -> FastAPI:
+class DeepSeekResponder(Protocol):
+    def respond(self, messages: Sequence[Mapping[str, str]]) -> AgentResult: ...
+
+
+def create_app(
+    *,
+    sleep: Sleep = asyncio.sleep,
+    deepseek_agent: DeepSeekResponder | None = None,
+    deepseek_environment: Mapping[str, str] | None = None,
+) -> FastAPI:
     target = FastAPI(title="QualityFlow Demo Target")
     resources: dict[str, dict[str, str]] = {}
     resources_lock = Lock()
@@ -179,6 +196,35 @@ def create_app(*, sleep: Sleep = asyncio.sleep) -> FastAPI:
                 "output_tokens": len(answer.split()),
             },
         }
+
+    @target.post("/agent/deepseek/respond")
+    def deepseek_agent_respond(body: AgentRequest) -> dict[str, object]:
+        responder = deepseek_agent
+        if responder is None:
+            try:
+                responder = DeepSeekAgent.from_environment(deepseek_environment)
+            except DeepSeekConfigurationError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="DeepSeek Agent is not configured",
+                ) from error
+        if body.prompt is not None:
+            messages = [{"role": "user", "content": body.prompt}]
+        else:
+            assert body.messages is not None
+            messages = [message.model_dump() for message in body.messages]
+        try:
+            return responder.respond(messages).as_dict()
+        except DeepSeekProviderTimeout as error:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="DeepSeek Agent request timed out",
+            ) from error
+        except DeepSeekProviderError as error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="DeepSeek Agent provider failed",
+            ) from error
 
     return target
 
